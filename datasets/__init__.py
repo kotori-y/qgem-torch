@@ -11,7 +11,7 @@ from torch_geometric.data import InMemoryDataset, Data
 from torch_geometric.loader import DataLoader
 from torch_sparse import SparseTensor
 
-from datasets.featurizer import mol_to_egeognn_graph_data
+from datasets.featurizer import mol_to_egeognn_graph_data, mask_egeognn_graph
 from datasets.utils import MoleculePositionToolKit
 
 
@@ -78,6 +78,8 @@ class EgeognnPretrainedDataset(InMemoryDataset):
         graph['Ad_node_i'] = indice.reshape([-1, 1])
         graph['Ad_node_j'] = indice.T.reshape([-1, 1])
         graph['atom_distance'] = dist_matrix.reshape([-1, 1])
+
+        mask_egeognn_graph(graph, mask_ratio=0.1)
         #
         # graph['atom_cm5'] = np.array(graph.get('cm5', []))
         # graph['atom_espc'] = np.array(graph.get('espc', []))

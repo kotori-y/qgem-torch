@@ -356,6 +356,7 @@ def mol_to_egeognn_graph_data(mol, atom_names, bond_names, atom_poses):
     data['Ba_node_j'] = node_j_indices
     data['Ba_node_k'] = node_k_indices
     data['BondAngleGraph_edges'] = BondAngleGraph_edges
+    data['BondAngleGraph_edge_attr'] = np.array(bond_angles, 'float32')
     data['bond_angle'] = np.array(bond_angles, 'float32')
 
     node_i_indices, node_j_indices, node_k_indices, node_l_indices, AngleDihedralGraph_edges, dihedral_angles = \
@@ -365,6 +366,7 @@ def mol_to_egeognn_graph_data(mol, atom_names, bond_names, atom_poses):
     data['Da_node_k'] = node_k_indices
     data['Da_node_l'] = node_l_indices
     data['AngleDihedralGraph_edges'] = AngleDihedralGraph_edges
+    data['AngleDihedralGraph_edge_attr'] = np.array(dihedral_angles, 'float32')
     data['dihedral_angle'] = np.array(dihedral_angles, 'float32')
 
     props = mol.GetPropsAsDict()
@@ -385,6 +387,68 @@ def mol_to_egeognn_graph_data(mol, atom_names, bond_names, atom_poses):
         data['bond_order'] = MoleculeFeatureToolKit.get_bond_borders(data['edges'], wiberg)
 
     return data
+
+
+def mask_egeognn_graph(graph, mask_ratio, mask_value=-1):
+    masked_atom_indices = []
+    masked_bond_indices = []
+    masked_angle_indices = []
+    masked_dihedral_indices = []
+
+    n_atoms = graph["num_nodes"]
+    edges = graph["edges"]
+    BondAngleGraph_edges = graph["BondAngleGraph_edges"]
+    AngleDihedralGraph_edges = graph["AngleDihedralGraph_edges"]
+
+    masked_size = max(1, int(n_atoms * mask_ratio))  # at least 1 atom will be selected.
+
+    # mask atoms and edges
+    full_atom_indices = np.arange(n_atoms)
+    full_bond_indices = np.arange(len(edges))
+
+    target_atom_indices = np.random.choice(full_atom_indices, size=masked_size, replace=False)
+
+    for atom_index in target_atom_indices:
+        left_nei_bond_indices = full_bond_indices[edges[:, 0] == atom_index]
+        right_nei_bond_indices = full_bond_indices[edges[:, 1] == atom_index]
+
+        nei_bond_indices = np.append(left_nei_bond_indices, right_nei_bond_indices)
+        nei_atom_indices = edges[left_nei_bond_indices, 1]
+
+        masked_atom_indices.append([atom_index])
+        masked_atom_indices.append(nei_atom_indices)
+        masked_bond_indices.append(nei_bond_indices)
+
+    masked_atom_indices = np.concatenate(masked_atom_indices, 0)
+    masked_bond_indices = np.concatenate(masked_bond_indices, 0)
+
+    # mask angles
+    full_angle_indices = np.arange(graph['BondAngleGraph_edges'].shape[0])
+    for bond_index in masked_bond_indices:
+        left_indices = full_angle_indices[BondAngleGraph_edges[:, 0] == bond_index]
+        right_indices = full_angle_indices[BondAngleGraph_edges[:, 1] == bond_index]
+        masked_angle_indices.append(np.append(left_indices, right_indices))
+
+    if len(masked_angle_indices) != 0:
+        masked_angle_indices = np.concatenate(masked_angle_indices, 0)
+
+    # mask dihedral angles
+    full_dihedral_indices = np.arange(graph['AngleDihedralGraph_edges'].shape[0])
+    for angle_index in masked_angle_indices:
+        left_indices = full_dihedral_indices[AngleDihedralGraph_edges[:, 0] == angle_index]
+        right_indices = full_dihedral_indices[AngleDihedralGraph_edges[:, 1] == angle_index]
+        masked_dihedral_indices.append(np.append(left_indices, right_indices))
+
+    if len(masked_dihedral_indices) != 0:
+        masked_dihedral_indices = np.concatenate(masked_dihedral_indices, 0)
+
+    # mask feature
+    graph['node_feat'][masked_atom_indices] = mask_value
+    graph['edge_attr'][masked_bond_indices] = mask_value
+    graph['BondAngleGraph_edge_attr'][masked_angle_indices] = mask_value
+    graph['AngleDihedralGraph_edge_attr'][masked_dihedral_indices] = mask_value
+
+    return graph
 
 
 if __name__ == "__main__":
