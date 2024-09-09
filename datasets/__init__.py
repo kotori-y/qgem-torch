@@ -13,6 +13,7 @@ from torch_sparse import SparseTensor
 
 from datasets.featurizer import mol_to_egeognn_graph_data, mask_egeognn_graph
 from datasets.utils import MoleculePositionToolKit
+from tqdm import tqdm
 
 
 class EgeognnPretrainedDataset(InMemoryDataset):
@@ -25,7 +26,6 @@ class EgeognnPretrainedDataset(InMemoryDataset):
             bond_names,
             with_provided_3d,
             mask_ratio,
-            mask_value,
             transform=None,
             pre_transform=None,
             remove_hs=False,
@@ -44,7 +44,6 @@ class EgeognnPretrainedDataset(InMemoryDataset):
         self.bond_names = bond_names
 
         self.mask_ratio = mask_ratio
-        self.mask_value = mask_value
 
         super().__init__(self.folder, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[0])
@@ -73,7 +72,7 @@ class EgeognnPretrainedDataset(InMemoryDataset):
         if os.path.isfile(os.path.join(path, "split_dict.pt")):
             return torch.load(os.path.join(path, "split_dict.pt"))
 
-    def prepare_pretrain_task(self, graph):
+    def prepare_pretrain_task(self, graph, quantum_property=False):
         """
         prepare graph for pretrain task
         """
@@ -84,13 +83,14 @@ class EgeognnPretrainedDataset(InMemoryDataset):
         graph['Ad_node_j'] = indice.T.reshape([-1, 1])
         graph['atom_distance'] = dist_matrix.reshape([-1, 1])
 
-        graph = mask_egeognn_graph(graph, mask_ratio=self.mask_ratio, mask_value=self.mask_value)
-        #
-        # graph['atom_cm5'] = np.array(graph.get('cm5', []))
-        # graph['atom_espc'] = np.array(graph.get('espc', []))
-        # graph['atom_hirshfeld'] = np.array(graph.get('hirshfeld', []))
-        # graph['atom_npa'] = np.array(graph.get('npa', []))
-        # graph['bo_bond_order'] = np.array(graph.get('bond_order', []))
+        graph = mask_egeognn_graph(graph, mask_ratio=self.mask_ratio)
+
+        if quantum_property:
+            graph['atom_cm5'] = np.array(graph.get('cm5', []))
+            graph['atom_espc'] = np.array(graph.get('espc', []))
+            graph['atom_hirshfeld'] = np.array(graph.get('hirshfeld', []))
+            graph['atom_npa'] = np.array(graph.get('npa', []))
+            graph['bo_bond_order'] = np.array(graph.get('bond_order', []))
 
         return graph
 
@@ -144,40 +144,51 @@ class EgeognnPretrainedDataset(InMemoryDataset):
             else:
                 graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
 
-            graph['smiles'] = Chem.MolToSmiles(mol)
+            # graph['smiles'] = Chem.MolToSmiles(mol)
             graph = self.prepare_pretrain_task(graph)
             # graph = self.rdk2graph(mol)
             # assert graph["edge_attr"].shape[0] == graph["edges"].shape[0]
             # assert graph["node_feat"].shape[0] == graph["num_nodes"]
 
             data = CustomData()
-            data.edges = torch.from_numpy(graph["edges"]).to(torch.int64)
-            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"]).to(torch.int64)
-            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"]).to(torch.int64)
+            data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
+            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
+            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
 
             data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
             data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
-            data.BondAngleGraph_edge_attr = torch.from_numpy(graph["BondAngleGraph_edge_attr"]).to(torch.float32)
-            data.AngleDihedralGraph_edge_attr = torch.from_numpy(graph["AngleDihedralGraph_edge_attr"]).to(torch.float32)
+            # data.BondAngleGraph_edge_attr = torch.from_numpy(graph["BondAngleGraph_edge_attr"]).to(torch.float32)
+            # data.AngleDihedralGraph_edge_attr = torch.from_numpy(graph["AngleDihedralGraph_edge_attr"]).to(torch.float32)
 
-            data.Bl_node_i = torch.from_numpy(graph["Bl_node_i"]).to(torch.int64)
-            data.Bl_node_j = torch.from_numpy(graph["Bl_node_j"]).to(torch.int64)
-            data.bond_length = torch.from_numpy(graph["bond_length"]).to(torch.float32)
+            # data.Bl_node_i = torch.from_numpy(graph["Bl_node_i"]).to(torch.int64)
+            # data.Bl_node_j = torch.from_numpy(graph["Bl_node_j"]).to(torch.int64)
+            data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
 
-            data.Ba_node_i = torch.from_numpy(graph["Ba_node_i"]).to(torch.int64)
-            data.Ba_node_j = torch.from_numpy(graph["Ba_node_j"]).to(torch.int64)
-            data.Ba_node_k = torch.from_numpy(graph["Ba_node_k"]).to(torch.int64)
-            data.bond_angle = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
+            # data.Ba_node_i = torch.from_numpy(graph["Ba_node_i"]).to(torch.int64)
+            # data.Ba_node_j = torch.from_numpy(graph["Ba_node_j"]).to(torch.int64)
+            # data.Ba_node_k = torch.from_numpy(graph["Ba_node_k"]).to(torch.int64)
+            data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
 
-            data.Da_node_i = torch.from_numpy(graph["Da_node_i"]).to(torch.int64)
-            data.Da_node_j = torch.from_numpy(graph["Da_node_j"]).to(torch.int64)
-            data.Da_node_k = torch.from_numpy(graph["Da_node_k"]).to(torch.int64)
-            data.Da_node_l = torch.from_numpy(graph["Da_node_l"]).to(torch.int64)
-            data.dihedral_angle = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
+            # data.Da_node_i = torch.from_numpy(graph["Da_node_i"]).to(torch.int64)
+            # data.Da_node_j = torch.from_numpy(graph["Da_node_j"]).to(torch.int64)
+            # data.Da_node_k = torch.from_numpy(graph["Da_node_k"]).to(torch.int64)
+            # data.Da_node_l = torch.from_numpy(graph["Da_node_l"]).to(torch.int64)
+            data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
 
-            data.Ad_node_i = torch.from_numpy(graph["Ad_node_i"]).to(torch.int64)
-            data.Ad_node_j = torch.from_numpy(graph["Ad_node_j"]).to(torch.int64)
-            data.atom_distance = torch.from_numpy(graph["atom_distance"]).to(torch.float32)
+            # data.Ad_node_i = torch.from_numpy(graph["Ad_node_i"]).to(torch.int64)
+            # data.Ad_node_j = torch.from_numpy(graph["Ad_node_j"]).to(torch.int64)
+            data.atom_distances = torch.from_numpy(graph["atom_distance"]).to(torch.float32)
+
+            data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
+            data.n_atoms = graph["num_nodes"]
+            data.n_bonds = graph["num_edges"]
+            data.n_angles = graph["num_angles"]
+            # data.n_dihedral = graph["num_dihedral"]
+
+            data.masked_atom_indices = torch.from_numpy(graph["masked_atom_indices"]).to(torch.int64)
+            data.masked_bond_indices = torch.from_numpy(graph["masked_bond_indices"]).to(torch.int64)
+            data.masked_angle_indices = torch.from_numpy(graph["masked_angle_indices"]).to(torch.int64)
+            data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
 
             data_list.append(data)
 
@@ -191,19 +202,27 @@ class CustomData(Data):
     def __cat_dim__(self, key, value, *args, **kwargs):
         if isinstance(value, SparseTensor):
             return (0, 1)
-        elif bool(re.search("(index|face|nei_tgt_mask)", key)):
+        elif bool(re.search("(index|face|nei_tgt_mask|edges)", key)):
             return -1
         return 0
 
     def __inc__(self, key: str, value, *args, **kwargs):
         if 'batch' in key and isinstance(value, Tensor):
             return int(value.max()) + 1
-        elif 'edge_index' in key or key == 'face':
+        elif 'AtomBondGraph_edges' in key or key == 'face':
             return self.num_nodes
-        elif 'angle_index' in key:
-            return self.edge_index.size(1)
-        elif 'dihedral_index' in key:
-            return self.angle_index.size(1)
+        elif 'BondAngleGraph_edges' in key:
+            return self.AtomBondGraph_edges.size(1)
+        elif 'AngleDihedralGraph_edges' in key:
+            return self.BondAngleGraph_edges.size(1)
+        elif 'masked_atom_indices' in key:
+            return self.num_nodes
+        elif 'masked_bond_indices' in key:
+            return self.num_edges
+        elif 'masked_angle_indices' in key:
+            return len(self.bond_angles)
+        elif 'masked_dihedral_indices' in key:
+            return len(self.dihedral_angles)
         else:
             return 0
 
@@ -219,7 +238,7 @@ if __name__ == "__main__":
         root='../data/demo', dataset_name='demo',
         remove_hs=True, base_path="../data/demo",
         atom_names=configs["atom_names"], bond_names=configs["bond_names"],
-        with_provided_3d=False, mask_value=-2, mask_ratio=0.12
+        with_provided_3d=False, mask_ratio=0.12
     )
 
     demo_loader = DataLoader(
@@ -233,5 +252,3 @@ if __name__ == "__main__":
 
     for step, batch in enumerate(pbar):
         ...
-
-    print()

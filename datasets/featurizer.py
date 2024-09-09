@@ -1,24 +1,25 @@
 import numpy as np
 from rdkit import Chem
-
-from datasets.utils import MoleculePositionToolKit
 from rdkit.Chem import rdMolTransforms
 
+from datasets.utils import MoleculePositionToolKit
+
 ALLOWABLE_FEATURES = {
-    "atomic_num": list(range(1, 119)) + ["misc"],
+    "atomic_num": list(range(1, 119)) + ["misc", "masked"],
     "chiral_tag": [
         "CHI_UNSPECIFIED",
         "CHI_TETRAHEDRAL_CW",
         "CHI_TETRAHEDRAL_CCW",
         "CHI_OTHER",
+        "masked"
     ],
-    "degree": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "misc"],
-    "formal_charge": [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, "misc"],
-    "total_numHs": [0, 1, 2, 3, 4, 5, 6, 7, 8, "misc"],
-    "num_radical_e": [0, 1, 2, 3, 4, "misc"],
-    "hybridization": ["SP", "SP2", "SP3", "SP3D", "SP3D2", "misc"],
-    "is_aromatic": [False, True],
-    "is_in_ring": [False, True],
+    "degree": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "misc", "masked"],
+    "formal_charge": [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, "misc", "masked"],
+    "total_numHs": [0, 1, 2, 3, 4, 5, 6, 7, 8, "misc", "masked"],
+    "num_radical_e": [0, 1, 2, 3, 4, "misc", "masked"],
+    "hybridization": ["SP", "SP2", "SP3", "SP3D", "SP3D2", "misc", "masked"],
+    "is_aromatic": [False, True, "masked"],
+    "is_in_ring": [False, True, "masked"],
     "bond_type": [
         "SINGLE",
         "DOUBLE",
@@ -27,6 +28,7 @@ ALLOWABLE_FEATURES = {
         "ANGLE",
         "DIHEDRAL",
         "misc",
+        "masked"
     ],
     "bond_stereo": [
         "STEREONONE",
@@ -35,8 +37,9 @@ ALLOWABLE_FEATURES = {
         "STEREOCIS",
         "STEREOTRANS",
         "STEREOANY",
+        "masked"
     ],
-    "is_conjugated": [False, True],
+    "is_conjugated": [False, True, "masked"],
 }
 
 
@@ -332,7 +335,8 @@ def mol_to_graph_data(mol, atom_names, bond_names):
     # graph["dihedral_index"] = supersuper_edges_idxs.T
     #
     graph["num_nodes"] = len(x)
-    # graph["n_nodes"] = len(x)
+    graph["num_edges"] = len(edge_attr)
+    # graph["n_nodes"] = len(node_feat)
     # graph["n_edges"] = len(edge_attr)
     # graph["n_angles"] = len(super_edges)
     # graph["n_dihedrals"] = len(supersuper_edges)
@@ -352,22 +356,24 @@ def mol_to_egeognn_graph_data(mol, atom_names, bond_names, atom_poses):
     node_i_indices, node_j_indices, node_k_indices, BondAngleGraph_edges, bond_angles, bond_angle_dirs = \
         MoleculeFeatureToolKit.get_superedge_angles(data['edges'], data['atom_pos'])
 
-    data['Ba_node_i'] = node_i_indices
-    data['Ba_node_j'] = node_j_indices
-    data['Ba_node_k'] = node_k_indices
+    # data['Ba_node_i'] = node_i_indices
+    # data['Ba_node_j'] = node_j_indices
+    # data['Ba_node_k'] = node_k_indices
     data['BondAngleGraph_edges'] = BondAngleGraph_edges
     data['BondAngleGraph_edge_attr'] = np.array(bond_angles, 'float32')
     data['bond_angle'] = np.array(bond_angles, 'float32')
+    data["num_angles"] = len(bond_angles)
 
     node_i_indices, node_j_indices, node_k_indices, node_l_indices, AngleDihedralGraph_edges, dihedral_angles = \
         MoleculeFeatureToolKit.get_supersuperedge_dihedral(mol, BondAngleGraph_edges, data["edges"])
-    data['Da_node_i'] = node_i_indices
-    data['Da_node_j'] = node_j_indices
-    data['Da_node_k'] = node_k_indices
-    data['Da_node_l'] = node_l_indices
+    # data['Da_node_i'] = node_i_indices
+    # data['Da_node_j'] = node_j_indices
+    # data['Da_node_k'] = node_k_indices
+    # data['Da_node_l'] = node_l_indices
     data['AngleDihedralGraph_edges'] = AngleDihedralGraph_edges
     data['AngleDihedralGraph_edge_attr'] = np.array(dihedral_angles, 'float32')
     data['dihedral_angle'] = np.array(dihedral_angles, 'float32')
+    # data['num_dihedral'] = len(dihedral_angles)
 
     props = mol.GetPropsAsDict()
     if 'cm5' in props:
@@ -389,7 +395,7 @@ def mol_to_egeognn_graph_data(mol, atom_names, bond_names, atom_poses):
     return data
 
 
-def mask_egeognn_graph(graph, mask_ratio, mask_value=-1):
+def mask_egeognn_graph(graph, mask_ratio):
     masked_atom_indices = []
     masked_bond_indices = []
     masked_angle_indices = []
@@ -442,13 +448,16 @@ def mask_egeognn_graph(graph, mask_ratio, mask_value=-1):
     if len(masked_dihedral_indices) != 0:
         masked_dihedral_indices = np.concatenate(masked_dihedral_indices, 0)
 
-    # mask feature
-    graph['node_feat'][masked_atom_indices] = mask_value
-    graph['edge_attr'][masked_bond_indices] = mask_value
-    graph['BondAngleGraph_edge_attr'][masked_angle_indices] = mask_value
-    graph['AngleDihedralGraph_edge_attr'][masked_dihedral_indices] = mask_value
+    graph['masked_atom_indices'] = masked_atom_indices
+    graph['masked_bond_indices'] = masked_bond_indices
+    graph['masked_angle_indices'] = masked_angle_indices
+    graph['masked_dihedral_indices'] = masked_dihedral_indices
 
     return graph
+
+
+def get_feature_dims(atom_names):
+    return list(map(len, [ALLOWABLE_FEATURES[name] for name in atom_names]))
 
 
 if __name__ == "__main__":
