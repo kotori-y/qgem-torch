@@ -15,5 +15,10 @@
     "is_in_ring",
     "is_conjugated",
     "bond_stereo"
+  ],
+  "pretrain_tasks": [
+    "Blr",
+    "Bar",
+    "Dar"
   ]
 }

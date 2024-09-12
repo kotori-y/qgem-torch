@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from models.gat.conv import DropoutIfTraining, MLP, NodeAttn
+from models.conv import DropoutIfTraining, MLP, NodeAttn
 
 
 class NodeEncoder(nn.Module):

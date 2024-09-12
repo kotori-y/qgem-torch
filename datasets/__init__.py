@@ -1,4 +1,5 @@
 import os
+import random
 import re
 
 import numpy as np
@@ -125,6 +126,9 @@ class EgeognnPretrainedDataset(InMemoryDataset):
 
         valid_conformation = 0
 
+        train_idx = []
+        valid_idx = []
+        test_idx = []
         data_list = []
 
         for mol in tqdm(mol_list):
@@ -191,11 +195,29 @@ class EgeognnPretrainedDataset(InMemoryDataset):
             data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
 
             data_list.append(data)
+            valid_conformation += 1
+
+            if random.random() < 0.8:
+                train_idx.append(valid_conformation)
+                continue
+            if random.random() < 0.5:
+                valid_idx.append(valid_conformation)
+                continue
+            test_idx.append(valid_conformation)
 
         graphs, slices = self.collate(data_list)
 
         print("Saving...")
         torch.save((graphs, slices), self.processed_paths[0])
+        os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
+        torch.save(
+            {
+                "train": torch.tensor(train_idx, dtype=torch.long),
+                "valid": torch.tensor(valid_idx, dtype=torch.long),
+                "test": torch.tensor(test_idx, dtype=torch.long),
+            },
+            os.path.join(self.root, "split", "split_dict.pt"),
+        )
 
 
 class CustomData(Data):
@@ -231,7 +253,7 @@ if __name__ == "__main__":
     import json
     from tqdm import tqdm
 
-    with open("../configs/input_feats.json") as f:
+    with open("../input_feats.json") as f:
         configs = json.load(f)
 
     dataset = EgeognnPretrainedDataset(
