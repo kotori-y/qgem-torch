@@ -267,8 +267,10 @@ class EGEM(nn.Module):
             AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
             pos, x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
             num_atoms, num_bonds, num_angles, num_graphs, atom_batch,
-            masked_atom_indices=None, masked_bond_indices=None,
-            masked_angle_indices=None, masked_dihedral_indices=None,
+            masked_atom_indices=masked_atom_indices,
+            masked_bond_indices=masked_bond_indices,
+            masked_angle_indices=masked_angle_indices,
+            masked_dihedral_indices=masked_dihedral_indices
         )
 
         return self.compute_loss(
@@ -286,7 +288,7 @@ if __name__ == "__main__":
     import json
     from tqdm import tqdm
 
-    with open("../../configs/input_feats.json") as f:
+    with open("../../input_feats.json") as f:
         configs = json.load(f)
 
     dataset = EgeognnPretrainedDataset(
