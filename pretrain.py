@@ -169,8 +169,7 @@ def main(args):
     if args.model_ver == 'gat':
         from models.gat import EGeoGNNModel, EGEM
     else:
-        from models.gin import EGeoGNNModel
-        from models.gat import EGEM
+        from models.gin import EGeoGNNModel, EGEM
 
     encoder_params = {
         "latent_size": args.latent_size,
@@ -286,8 +285,8 @@ def main(args):
             checkpoint = {
                 "epoch": epoch,
                 "model_state_dict": model_without_ddp.state_dict(),
-                # "optimizer_state_dict": optimizer.state_dict(),
-                # "scheduler_state_dict": scheduler.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "args": args,
             }
             torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
@@ -336,7 +335,7 @@ def main_cli():
 
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--num-layers", type=int, default=4)
-    parser.add_argument("--dropout_rate", type=float, default=0.1)
+    parser.add_argument("--dropout-rate", type=float, default=0.1)
 
     parser.add_argument("--checkpoint-dir", type=str, default="")
     parser.add_argument("--eval-from", type=str, default=None)

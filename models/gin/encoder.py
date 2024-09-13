@@ -12,7 +12,7 @@ class EGeoGNNBlock(nn.Module):
         self.latent_size = latent_size
         self.last_act = last_act
 
-        self.gnn = GIN(latent_size, latent_size * 2, num_layers=2)
+        self.gnn = GIN(latent_size, latent_size, num_layers=2)
         self.norm = nn.LayerNorm(latent_size)
         self.graph_norm = GraphNorm(latent_size)
 
@@ -48,14 +48,14 @@ class AtomBondEmbedding(nn.Module):
     def forward(self, node_features):
         out_embed = 0
         for i, layer in enumerate(self.embed_layers):
-            out_embed += layer(node_features[i])
+            out_embed += layer(node_features[:, i])
         return out_embed
 
 
 class RBF(nn.Module):
     def __init__(self, centers, gamma):
         super(RBF, self).__init__()
-        self.centers = torch.reshape(torch.tensor(centers), [1, -1])
+        self.centers = torch.reshape(torch.tensor(centers, dtype=torch.float32), [1, -1])
         self.gamma = gamma
 
     def forward(self, x):

@@ -1,1 +1,1 @@
-from models.gin.model import EGeoGNNModel
+from models.gin.model import EGeoGNNModel, EGEM

@@ -1,5 +1,5 @@
 from typing import List
-
+import copy
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -63,24 +63,26 @@ class EGeoGNNModel(nn.Module):
         self.dihedral_embedding = MLP(1, [latent_size, latent_size])
 
     def one_hot_atoms(self, atoms, masked_atom_indices=None):
+        _atoms = copy.deepcopy(atoms)
         vocab_sizes = get_feature_dims(self.atom_names)
         one_hots = []
-        for i in range(atoms.shape[1]):
+        for i in range(_atoms.shape[1]):
             if masked_atom_indices is not None:
-                atoms[:, i][masked_atom_indices] = vocab_sizes[i] - 1
+                _atoms[:, i][masked_atom_indices] = vocab_sizes[i] - 1
             one_hots.append(
-                F.one_hot(atoms[:, i], num_classes=vocab_sizes[i]).to(atoms.device).to(torch.float32)
+                F.one_hot(_atoms[:, i], num_classes=vocab_sizes[i]).to(atoms.device).to(torch.float32)
             )
         return torch.cat(one_hots, dim=1)
 
     def one_hot_bonds(self, bonds, masked_bond_indices=None):
+        _bonds = copy.deepcopy(bonds)
         vocab_sizes = get_feature_dims(self.bond_names)
         one_hots = []
         for i in range(bonds.shape[1]):
             if masked_bond_indices is not None:
-                bonds[:, i][masked_bond_indices] = vocab_sizes[i] - 1
+                _bonds[:, i][masked_bond_indices] = vocab_sizes[i] - 1
             one_hots.append(
-                F.one_hot(bonds[:, i], num_classes=vocab_sizes[i]).to(bonds.device).to(torch.float32)
+                F.one_hot(_bonds[:, i], num_classes=vocab_sizes[i]).to(bonds.device).to(torch.float32)
             )
         return torch.cat(one_hots, dim=1)
 
@@ -98,10 +100,14 @@ class EGeoGNNModel(nn.Module):
     ):
         onehot_x = self.one_hot_atoms(x, masked_atom_indices=masked_atom_indices)
         onehot_bond_attr = self.one_hot_bonds(bond_attr, masked_bond_indices=masked_bond_indices)
+
+        _bond_angles = copy.deepcopy(bond_angles).to(bond_angles.device)
+        _dihedral_angles = copy.deepcopy(dihedral_angles).to(dihedral_angles.device)
+
         if masked_angle_indices is not None:
-            bond_angles[masked_angle_indices] = 0
+            _bond_angles[masked_angle_indices] = 0
         if masked_dihedral_indices is not None:
-            dihedral_angles[masked_dihedral_indices] = 0
+            _dihedral_angles[masked_dihedral_indices] = 0
 
         graph_idx = torch.arange(num_graphs).to(x.device)
         bond_batch = torch.repeat_interleave(graph_idx, num_bonds, dim=0)
@@ -109,8 +115,8 @@ class EGeoGNNModel(nn.Module):
 
         atom_attr = self.atom_init(onehot_x)
         bond_attr = self.bond_init(onehot_bond_attr)
-        angle_attr = self.angle_embedding(bond_angles.unsqueeze(-1))
-        dihedral_attr = self.dihedral_embedding(dihedral_angles.unsqueeze(-1))
+        angle_attr = self.angle_embedding(_bond_angles.unsqueeze(-1))
+        dihedral_attr = self.dihedral_embedding(_dihedral_angles.unsqueeze(-1))
 
         u = self.global_init.expand(num_graphs, -1)
 
