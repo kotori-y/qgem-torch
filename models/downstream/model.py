@@ -32,7 +32,7 @@ class DownstreamModel(nn.Module):
             self,
             AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
             x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
-            num_graphs, atom_batch
+            num_atoms, num_bonds, num_angles, num_graphs, atom_batch,
     ):
         _, _, _, _, graph_repr = self.compound_encoder(
             AtomBondGraph_edges=AtomBondGraph_edges,
@@ -41,6 +41,7 @@ class DownstreamModel(nn.Module):
             x=x, bond_attr=bond_attr, bond_lengths=bond_lengths,
             bond_angles=bond_angles, dihedral_angles=dihedral_angles,
             num_graphs=num_graphs, atom_batch=atom_batch,
+            num_atoms=num_atoms, num_bonds=num_bonds, num_angles=num_angles,
             masked_atom_indices=None,
             masked_bond_indices=None,
             masked_angle_indices=None,
