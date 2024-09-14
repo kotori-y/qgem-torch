@@ -195,15 +195,17 @@ class EgeognnPretrainedDataset(InMemoryDataset):
             data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
 
             data_list.append(data)
-            valid_conformation += 1
 
             if random.random() < 0.8:
                 train_idx.append(valid_conformation)
+                valid_conformation += 1
                 continue
             if random.random() < 0.5:
                 valid_idx.append(valid_conformation)
+                valid_conformation += 1
                 continue
             test_idx.append(valid_conformation)
+            valid_conformation += 1
 
         graphs, slices = self.collate(data_list)
 
@@ -377,15 +379,17 @@ class EgeognnFinetuneDataset(InMemoryDataset):
             # data.n_dihedral = graph["num_dihedral"]
 
             data_list.append(data)
-            valid_conformation += 1
 
             if random.random() < 0.8:
                 train_idx.append(valid_conformation)
+                valid_conformation += 1
                 continue
             if random.random() < 0.5:
                 valid_idx.append(valid_conformation)
+                valid_conformation += 1
                 continue
             test_idx.append(valid_conformation)
+            valid_conformation += 1
 
         graphs, slices = self.collate(data_list)
 
