@@ -3,6 +3,7 @@ import os
 import os.path as osp
 import random
 import re
+from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import Pool
 
 import numpy as np
@@ -34,6 +35,7 @@ class EgeognnPretrainedDataset(Dataset):
             transform=None,
             pre_transform=None,
             remove_hs=False,
+            mpi=False
     ):
         if remove_hs:
             self.folder = os.path.join(root, f"egeognn_{dataset_name}_rh")
@@ -147,7 +149,8 @@ class EgeognnPretrainedDataset(Dataset):
         data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[0]))
         return data
 
-    def foobar(self, mol):
+
+    def process_molecule(self, mol):
         if self.with_provided_3d:
             graph = self.mol_to_egeognn_graph_data_raw3d(mol)
         else:
@@ -180,39 +183,11 @@ class EgeognnPretrainedDataset(Dataset):
         return data
 
     def process_egeognn(self):
+        # print(f"{os.cpu_count()} cpus to be used")
+        with ProcessPoolExecutor() as executor:
+            results = list(tqdm(executor.map(self.process_molecule, self.mol_list), total=len(self.mol_list)))
 
-        pbar = tqdm(self.mol_list)
-        for idx, mol in enumerate(pbar):
-
-            if self.with_provided_3d:
-                graph = self.mol_to_egeognn_graph_data_raw3d(mol)
-            else:
-                graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
-
-            graph = self.prepare_pretrain_task(graph)
-
-            data = CustomData()
-            data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
-            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
-            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
-
-            data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
-            data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
-
-            data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
-            data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
-            data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
-
-            data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
-            data.n_atoms = graph["num_nodes"]
-            data.n_bonds = graph["num_edges"]
-            data.n_angles = graph["num_angles"]
-
-            data.masked_atom_indices = torch.from_numpy(graph["masked_atom_indices"]).to(torch.int64)
-            data.masked_bond_indices = torch.from_numpy(graph["masked_bond_indices"]).to(torch.int64)
-            data.masked_angle_indices = torch.from_numpy(graph["masked_angle_indices"]).to(torch.int64)
-            data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
-
+        for idx, data in enumerate(results):
             torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
         train_num = int(len(self.mol_list) * 0.8)

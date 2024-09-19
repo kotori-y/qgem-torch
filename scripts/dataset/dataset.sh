@@ -10,10 +10,10 @@ export PYTHONUNBUFFERED=1
 
 # root_path="../../../.."
 # export PYTHONPATH="$(pwd)/$root_path/":$PYTHONPATH
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
+#export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
 CONFIG_PATH='./config.json'
-DATASET_NAME='zinc22'
+DATASET_NAME=$1
 DATASET_ROOT='./data/'$DATASET_NAME
 DATASET_BASE_PATH='./data/'$DATASET_NAME
 
@@ -39,20 +39,15 @@ WEIGHT_DECAY=1e-2
 EPOCHS=100
 LOG_INTERVAL=5
 
-DEVICE='cuda'
+DEVICE='cpu'
 SEED=2024
-
-EPOCHS=100
-LR=1e-4
-DROPOUT=0.2
 
 MODEL_VER='gat'
 
-CHECKPOINT_DIR='./outs/checkpoints'
+CHECKPOINT_DIR='./outs/checkpoints/'$DATASET_NAME'-'$MODEL_VER
 
-GPU_NODE='gpu3'
-GPU_NUM=2
-
+echo "run as dataset mode"
+echo "=================="
 python pretrain.py \
   --config-path $CONFIG_PATH \
   --dataset-root $DATASET_ROOT \
@@ -76,7 +71,9 @@ python pretrain.py \
   --weight-decay $WEIGHT_DECAY \
   --epochs $EPOCHS \
   --log-interval $LOG_INTERVAL \
-  --model-ver $MODEL_VER
+  --model-ver $MODEL_VER \
+  --device $DEVICE \
   --lr-warmup \
   --use-adamw \
-  --remove-hs
+  --remove-hs \
+  --dataset

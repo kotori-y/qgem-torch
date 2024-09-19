@@ -53,10 +53,11 @@ def train(model, device, loader, optimizer, scheduler, args):
             optimizer.zero_grad()
 
             loss, loss_dict = model(**input_params)
-
             loss.backward()
+
             if args.grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)
+
             optimizer.step()
             scheduler.step()
 
@@ -144,6 +145,9 @@ def main(args):
         bond_names=config["bond_names"],
     )
 
+    if args.dataset:
+        return None
+
     split_idx = dataset.get_idx_split()
 
     train_loader = DataLoader(
@@ -156,8 +160,15 @@ def main(args):
 
     valid_loader = DataLoader(
         dataset[split_idx["valid"]],
-        batch_size=args.batch_size,
+        batch_size=args.batch_size * 2,
         shuffle=True,
+        num_workers=args.num_workers
+    )
+
+    test_loader = DataLoader(
+        dataset[split_idx["test"]],
+        batch_size=args.batch_size * 2,
+        shuffle=False,
         num_workers=args.num_workers
     )
 
@@ -202,7 +213,7 @@ def main(args):
     model_without_ddp = model
     args.disable_tqdm = False
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
         model_without_ddp = model.module
 
         args.checkpoint_dir = "" if args.rank != 0 else args.checkpoint_dir
@@ -263,20 +274,22 @@ def main(args):
 
         print("Evaluating...")
         valid_dict = evaluate(model, device, valid_loader, args)
+        test_dict = evaluate(model, device, test_loader, args)
 
         if args.checkpoint_dir:
             print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
 
         train_pref = loss_dict['loss']
         valid_pref = valid_dict['loss']
+        test_pref = valid_dict['loss']
         # print(f"Train: {train_pref} Validation: {valid_pref} Test: {test_pref}")
 
         train_curve.append(train_pref)
         valid_curve.append(valid_pref)
-        # test_curve.append(test_pref)
+        test_curve.append(test_pref)
 
         if args.checkpoint_dir:
-            logs = {"epoch": epoch, "Train": train_pref, "Valid": valid_pref}
+            logs = {"epoch": epoch, "Train": loss_dict, "Valid": valid_dict, "Test": test_dict}
             with io.open(
                     os.path.join(args.checkpoint_dir, "log.txt"), "a", encoding="utf8", newline="\n"
             ) as tgt:
@@ -293,7 +306,7 @@ def main(args):
             if args.enable_tb:
                 tb_writer.add_scalar("evaluation/train", train_pref, epoch)
                 tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
-                # tb_writer.add_scalar("evaluation/test", test_pref, epoch)
+                tb_writer.add_scalar("evaluation/test", test_pref, epoch)
                 for k, v in loss_dict.items():
                     tb_writer.add_scalar(f"training/{k}", v, epoch)
 
@@ -307,7 +320,7 @@ def main(args):
     print("Finished traning!")
     print(f"Best validation epoch: {best_val_epoch + 1}")
     print(f"Best validation score: {valid_curve[best_val_epoch]}")
-    # print(f"Test score: {test_curve[best_val_epoch]}")
+    print(f"Test score: {test_curve[best_val_epoch]}")
 
 
 def main_cli():
@@ -346,8 +359,10 @@ def main_cli():
     parser.add_argument("--beta", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
     parser.add_argument("--lr-warmup", action='store_true', default=False)
+    parser.add_argument("--period", type=float, default=10)
 
     parser.add_argument("--distributed", action='store_true', default=False)
+    parser.add_argument("--local-rank", type=int, default=0)
     parser.add_argument("--enable-tb", action='store_true', default=False)
 
     parser.add_argument("--epochs", type=int, default=10)
@@ -355,6 +370,8 @@ def main_cli():
     parser.add_argument("--grad-norm", type=float, default=None)
 
     parser.add_argument("--model-ver", type=str, default='gat')
+
+    parser.add_argument("--dataset", action='store_true', default=False)
 
     args = parser.parse_args()
     print(args)
