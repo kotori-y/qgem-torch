@@ -18,13 +18,13 @@ class MoleculePositionToolKit:
             res = AllChem.EmbedMultipleConfs(new_mol, numConfs=numConfs, numThreads=numThreads)
             res = AllChem.MMFFOptimizeMoleculeConfs(new_mol)
             res = [[x[0], x[1] if not x[0] else np.Inf] for x in res]
-            new_mol = Chem.RemoveHs(new_mol)
             index = np.argmin([x[1] for x in res])
         except:
             new_mol = mol
             AllChem.Compute2DCoords(new_mol)
             index = 0
 
+        new_mol = Chem.RemoveHs(new_mol)
         return new_mol, MoleculePositionToolKit.get_atom_poses(new_mol, conf_idx=index)
 
     @staticmethod

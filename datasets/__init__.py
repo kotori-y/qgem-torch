@@ -1,26 +1,27 @@
+import json
 import os
+import os.path as osp
 import random
 import re
+from multiprocessing import Pool
 
-import json
-from tqdm import tqdm
-
-import pandas as pd
 import numpy as np
+import pandas as pd
 import torch
 from rdkit import Chem
 from rdkit.Chem.rdmolops import RemoveHs
 from sklearn.metrics import pairwise_distances
 from torch import Tensor
-from torch_geometric.data import InMemoryDataset, Data
+from torch_geometric.data import InMemoryDataset, Data, Dataset
 from torch_geometric.loader import DataLoader
 from torch_sparse import SparseTensor
+from tqdm import tqdm
 
 from datasets.featurizer import mol_to_egeognn_graph_data, mask_egeognn_graph
 from datasets.utils import MoleculePositionToolKit
 
 
-class EgeognnPretrainedDataset(InMemoryDataset):
+class EgeognnPretrainedDataset(Dataset):
     def __init__(
             self,
             root,
@@ -49,8 +50,27 @@ class EgeognnPretrainedDataset(InMemoryDataset):
 
         self.mask_ratio = mask_ratio
 
+        input_file = os.path.join(self.base_path, f"{self.dataset_name}.smi")
+        with open(input_file) as f:
+            smiles_list = f.readlines()
+
+        self.mol_list = []
+
+        for smiles in smiles_list:
+            if "." in smiles:
+                continue
+            tmp_mol = Chem.MolFromSmiles(smiles.strip())
+            try:
+                mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
+                if mol.GetNumBonds() < 1:
+                    continue
+                self.mol_list.append(mol)
+            except Exception:
+                continue
+
+        random.shuffle(self.mol_list)
+
         super().__init__(self.folder, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
 
     @property
     def raw_file_names(self):
@@ -59,7 +79,7 @@ class EgeognnPretrainedDataset(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        return f"egeognn_{self.dataset_name}_processed.pt"
+        return [f"egeognn_{self.dataset_name}_processed_{i}.pt" for i in range(len(self.mol_list))]
 
     def download(self):
         if os.path.exists(self.processed_paths[0]):
@@ -109,7 +129,7 @@ class EgeognnPretrainedDataset(InMemoryDataset):
 
     def mol_to_egeognn_graph_data_MMFF3d(self, mol):
         if len(mol.GetAtoms()) <= 400:
-            mol, atom_poses = MoleculePositionToolKit.get_MMFF_atom_poses(mol, numConfs=3, numThreads=0)
+            mol, atom_poses = MoleculePositionToolKit.get_MMFF_atom_poses(mol, numConfs=3, numThreads=1)
         else:
             atom_poses = MoleculePositionToolKit.get_2d_atom_poses(mol)
 
@@ -120,39 +140,56 @@ class EgeognnPretrainedDataset(InMemoryDataset):
             atom_poses=atom_poses
         )
 
+    def len(self):
+        return len(self.processed_file_names)
+
+    def get(self, idx):
+        data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[0]))
+        return data
+
+    def foobar(self, mol):
+        if self.with_provided_3d:
+            graph = self.mol_to_egeognn_graph_data_raw3d(mol)
+        else:
+            graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
+
+        graph = self.prepare_pretrain_task(graph)
+
+        data = CustomData()
+        data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
+        data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
+        data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
+
+        data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
+        data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
+
+        data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
+        data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
+        data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
+
+        data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
+        data.n_atoms = graph["num_nodes"]
+        data.n_bonds = graph["num_edges"]
+        data.n_angles = graph["num_angles"]
+
+        data.masked_atom_indices = torch.from_numpy(graph["masked_atom_indices"]).to(torch.int64)
+        data.masked_bond_indices = torch.from_numpy(graph["masked_bond_indices"]).to(torch.int64)
+        data.masked_angle_indices = torch.from_numpy(graph["masked_angle_indices"]).to(torch.int64)
+        data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
+
+        return data
+
     def process_egeognn(self):
-        input_file = os.path.join(self.base_path, f"{self.dataset_name}.smi")
-        with open(input_file) as f:
-            smiles_list = f.readlines()
-        mol_list = [Chem.MolFromSmiles(x.strip()) for x in smiles_list]
-        mol_list = [mol for mol in mol_list if mol is not None]
 
-        valid_conformation = 0
-
-        train_idx = []
-        valid_idx = []
-        test_idx = []
-        data_list = []
-
-        for mol in tqdm(mol_list):
-            if self.remove_hs:
-                try:
-                    mol = RemoveHs(mol)
-                except Exception:
-                    continue
-
-            if "." in Chem.MolToSmiles(mol):
-                continue
-            if mol.GetNumBonds() < 1:
-                continue
+        pbar = tqdm(self.mol_list)
+        for idx, mol in enumerate(pbar):
 
             if self.with_provided_3d:
                 graph = self.mol_to_egeognn_graph_data_raw3d(mol)
             else:
                 graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
 
-            # graph['smiles'] = Chem.Moges"].shape[0]
-            # assert graph["node_feat"].shape[0] == graph["num_nodes"]
+            graph = self.prepare_pretrain_task(graph)
 
             data = CustomData()
             data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
@@ -161,56 +198,30 @@ class EgeognnPretrainedDataset(InMemoryDataset):
 
             data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
             data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
-            # data.BondAngleGraph_edge_attr = torch.from_numpy(graph["BondAngleGraph_edge_attr"]).to(torch.float32)
-            # data.AngleDihedralGraph_edge_attr = torch.from_numpy(graph["AngleDihedralGraph_edge_attr"]).to(torch.float32)
 
-            # data.Bl_node_i = torch.from_numpy(graph["Bl_node_i"]).to(torch.int64)
-            # data.Bl_node_j = torch.from_numpy(graph["Bl_node_j"]).to(torch.int64)
             data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
-
-            # data.Ba_node_i = torch.from_numpy(graph["Ba_node_i"]).to(torch.int64)
-            # data.Ba_node_j = torch.from_numpy(graph["Ba_node_j"]).to(torch.int64)
-            # data.Ba_node_k = torch.from_numpy(graph["Ba_node_k"]).to(torch.int64)
             data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
-
-            # data.Da_node_i = torch.from_numpy(graph["Da_node_i"]).to(torch.int64)
-            # data.Da_node_j = torch.from_numpy(graph["Da_node_j"]).to(torch.int64)
-            # data.Da_node_k = torch.from_numpy(graph["Da_node_k"]).to(torch.int64)
-            # data.Da_node_l = torch.from_numpy(graph["Da_node_l"]).to(torch.int64)
             data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
-
-            # data.Ad_node_i = torch.from_numpy(graph["Ad_node_i"]).to(torch.int64)
-            # data.Ad_node_j = torch.from_numpy(graph["Ad_node_j"]).to(torch.int64)
-            data.atom_distances = torch.from_numpy(graph["atom_distance"]).to(torch.float32)
 
             data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
             data.n_atoms = graph["num_nodes"]
             data.n_bonds = graph["num_edges"]
             data.n_angles = graph["num_angles"]
-            # data.n_dihedral = graph["num_dihedral"]
 
             data.masked_atom_indices = torch.from_numpy(graph["masked_atom_indices"]).to(torch.int64)
             data.masked_bond_indices = torch.from_numpy(graph["masked_bond_indices"]).to(torch.int64)
             data.masked_angle_indices = torch.from_numpy(graph["masked_angle_indices"]).to(torch.int64)
             data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
 
-            data_list.append(data)
+            torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
-            if random.random() < 0.8:
-                train_idx.append(valid_conformation)
-                valid_conformation += 1
-                continue
-            if random.random() < 0.5:
-                valid_idx.append(valid_conformation)
-                valid_conformation += 1
-                continue
-            test_idx.append(valid_conformation)
-            valid_conformation += 1
+        train_num = int(len(self.mol_list) * 0.8)
+        valid_num = int((len(self.mol_list) - train_num) / 2)
 
-        graphs, slices = self.collate(data_list)
+        train_idx = range(train_num)
+        valid_idx = range(train_num, train_num + valid_num)
+        test_idx = range(train_num + valid_num, len(self.mol_list))
 
-        print("Saving...")
-        torch.save((graphs, slices), self.processed_paths[0])
         os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
         torch.save(
             {
@@ -230,17 +241,22 @@ class EgeognnFinetuneDataset(InMemoryDataset):
             dataset_name,
             atom_names,
             bond_names,
+            endpoints,
             remove_hs=False,
             transform=None,
             pre_transform=None,
             dev=False
     ):
+        assert dev in [True, False]
+
+        if endpoints is None:
+            endpoints = []
+
         if remove_hs:
             self.folder = os.path.join(root, f"egeognn_{dataset_name}_rh")
         else:
             self.folder = os.path.join(root, f"egeognn_{dataset_name}")
 
-        self.dataset_name = dataset_name
         self.remove_hs = remove_hs
         self.base_path = base_path
 
@@ -248,6 +264,7 @@ class EgeognnFinetuneDataset(InMemoryDataset):
         self.bond_names = bond_names
 
         self.dev = dev
+        self.endpoints = endpoints
 
         super().__init__(self.folder, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[0])
@@ -276,28 +293,6 @@ class EgeognnFinetuneDataset(InMemoryDataset):
         if os.path.isfile(os.path.join(path, "split_dict.pt")):
             return torch.load(os.path.join(path, "split_dict.pt"))
 
-    def prepare_pretrain_task(self, graph, quantum_property=False):
-        """
-        prepare graph for pretrain task
-        """
-        n = len(graph['atom_pos'])
-        dist_matrix = pairwise_distances(graph['atom_pos'])
-        indice = np.repeat(np.arange(n).reshape([-1, 1]), n, axis=1)
-        graph['Ad_node_i'] = indice.reshape([-1, 1])
-        graph['Ad_node_j'] = indice.T.reshape([-1, 1])
-        graph['atom_distance'] = dist_matrix.reshape([-1, 1])
-
-        # graph = mask_egeognn_graph(graph, mask_ratio=self.mask_ratio)
-
-        if quantum_property:
-            graph['atom_cm5'] = np.array(graph.get('cm5', []))
-            graph['atom_espc'] = np.array(graph.get('espc', []))
-            graph['atom_hirshfeld'] = np.array(graph.get('hirshfeld', []))
-            graph['atom_npa'] = np.array(graph.get('npa', []))
-            graph['bo_bond_order'] = np.array(graph.get('bond_order', []))
-
-        return graph
-
     def mol_to_egeognn_graph_data_raw3d(self, mol):
         atom_poses = MoleculePositionToolKit.get_atom_poses(mol)
         return mol_to_egeognn_graph_data(
@@ -307,9 +302,9 @@ class EgeognnFinetuneDataset(InMemoryDataset):
             atom_poses=atom_poses
         )
 
-    def mol_to_egeognn_graph_data_MMFF3d(self, mol):
+    def mol_to_egeognn_graph_data_MMFF3d(self, mol, numConfs=3):
         if len(mol.GetAtoms()) <= 400:
-            mol, atom_poses = MoleculePositionToolKit.get_MMFF_atom_poses(mol, numConfs=3, numThreads=0)
+            mol, atom_poses = MoleculePositionToolKit.get_MMFF_atom_poses(mol, numConfs=numConfs, numThreads=0)
         else:
             atom_poses = MoleculePositionToolKit.get_2d_atom_poses(mol)
 
@@ -321,75 +316,66 @@ class EgeognnFinetuneDataset(InMemoryDataset):
         )
 
     def process_egeognn(self):
-        input_file = os.path.join(self.base_path, f"{self.dataset_name}.csv")
-        df = pd.read_csv(input_file)
-
-        if self.dev:
-            df = df.sample(n=100)
-
-        mol_list = df['smiles'].map(lambda x: Chem.MolFromSmiles(x)).values
-        labels = df.loc[:, self.dataset_name].values
-
-        valid_conformation = 0
-
         train_idx = []
         valid_idx = []
         test_idx = []
         data_list = []
 
-        for i, mol in tqdm(enumerate(mol_list), total=len(mol_list)):
-            if self.remove_hs:
-                try:
-                    mol = RemoveHs(mol)
-                except Exception:
+        valid_conformation = 0
+
+        for endpoint in self.endpoints:
+            input_file = os.path.join(self.base_path, f"{endpoint}.csv")
+            df = pd.read_csv(input_file, nrows=[10, None][self.dev])
+
+            mol_list = df['smiles'].map(lambda x: Chem.MolFromSmiles(x)).values
+            labels = df[endpoint].values
+
+            for i, mol in tqdm(enumerate(mol_list), total=len(mol_list)):
+                if self.remove_hs:
+                    try:
+                        mol = RemoveHs(mol)
+                    except Exception:
+                        continue
+
+                if "." in Chem.MolToSmiles(mol):
+                    continue
+                if mol.GetNumBonds() < 1:
                     continue
 
-            if "." in Chem.MolToSmiles(mol):
-                continue
-            if mol.GetNumBonds() < 1:
-                continue
+                graph = self.mol_to_egeognn_graph_data_MMFF3d(mol, numConfs=3)
 
-            graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
-            graph = self.prepare_pretrain_task(graph)
-            # graph = self.rdk2graph(mol)
-            # assert graph["edge_attr"].shape[0] == graph["edges"].shape[0]
-            # assert graph["node_feat"].shape[0] == graph["num_nodes"]
+                data = CustomData()
+                data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
+                data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
+                data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
 
-            data = CustomData()
-            data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
-            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
-            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
+                data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
+                data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
+                data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
+                data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
+                data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
 
-            data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
-            data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
-            data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
-            data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
-            data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
-            data.atom_distances = torch.from_numpy(graph["atom_distance"]).to(torch.float32)
+                data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
+                data.n_atoms = graph["num_nodes"]
+                data.n_bonds = graph["num_edges"]
+                data.n_angles = graph["num_angles"]
 
-            data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
-            data.n_atoms = graph["num_nodes"]
-            data.n_bonds = graph["num_edges"]
-            data.n_angles = graph["num_angles"]
+                data.labels = torch.tensor(labels[i]).to(torch.float32)
+                data.label_mean = torch.tensor(labels.mean()).to(torch.float32)
+                data.label_std = torch.tensor(labels.std()).to(torch.float32)
 
-            data.labels = torch.tensor(labels[i]).to(torch.float32)
-            data.label_mean = torch.tensor(labels.mean()).to(torch.float32)
-            data.label_std = torch.tensor(labels.std()).to(torch.float32)
+                data_list.append(data)
 
-            # data.n_dihedral = graph["num_dihedral"]
-
-            data_list.append(data)
-
-            if random.random() < 0.8:
-                train_idx.append(valid_conformation)
+                if random.random() < 0.8:
+                    train_idx.append(valid_conformation)
+                    valid_conformation += 1
+                    continue
+                if random.random() < 0.5:
+                    valid_idx.append(valid_conformation)
+                    valid_conformation += 1
+                    continue
+                test_idx.append(valid_conformation)
                 valid_conformation += 1
-                continue
-            if random.random() < 0.5:
-                valid_idx.append(valid_conformation)
-                valid_conformation += 1
-                continue
-            test_idx.append(valid_conformation)
-            valid_conformation += 1
 
         graphs, slices = self.collate(data_list)
 
@@ -439,14 +425,15 @@ if __name__ == "__main__":
     with open("../config.json") as f:
         configs = json.load(f)
 
-    dataset = EgeognnFinetuneDataset(
-        root='../data/downstream/toxicity',
-        dataset_name='Mouse_Oral_LD50',
+    dataset = EgeognnPretrainedDataset(
+        root='../data/demo',
+        dataset_name='demo',
         remove_hs=True,
-        base_path="../data/downstream/toxicity",
+        with_provided_3d=False,
+        base_path="../data/demo",
         atom_names=configs["atom_names"],
         bond_names=configs["bond_names"],
-        dev=True
+        mask_ratio=0.1
     )
 
     demo_loader = DataLoader(
