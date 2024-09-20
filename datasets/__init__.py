@@ -1,10 +1,8 @@
 import json
 import os
-import os.path as osp
 import random
 import re
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -71,6 +69,7 @@ class EgeognnPretrainedDataset(Dataset):
                 continue
 
         random.shuffle(self.mol_list)
+        self.mpi = mpi
 
         super().__init__(self.folder, transform, pre_transform)
 
@@ -146,52 +145,105 @@ class EgeognnPretrainedDataset(Dataset):
         return len(self.processed_file_names)
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[0]))
+        data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[idx]))
         return data
-
 
     def process_molecule(self, mol):
-        if self.with_provided_3d:
-            graph = self.mol_to_egeognn_graph_data_raw3d(mol)
-        else:
-            graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
 
-        graph = self.prepare_pretrain_task(graph)
+        try:
+            if self.with_provided_3d:
+                graph = self.mol_to_egeognn_graph_data_raw3d(mol)
+            else:
+                graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
 
-        data = CustomData()
-        data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
-        data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
-        data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
+            graph = self.prepare_pretrain_task(graph)
 
-        data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
-        data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
+            data = CustomData()
+            data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
+            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
+            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
 
-        data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
-        data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
-        data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
+            data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
+            data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
 
-        data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
-        data.n_atoms = graph["num_nodes"]
-        data.n_bonds = graph["num_edges"]
-        data.n_angles = graph["num_angles"]
+            data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
+            data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
+            data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
 
-        data.masked_atom_indices = torch.from_numpy(graph["masked_atom_indices"]).to(torch.int64)
-        data.masked_bond_indices = torch.from_numpy(graph["masked_bond_indices"]).to(torch.int64)
-        data.masked_angle_indices = torch.from_numpy(graph["masked_angle_indices"]).to(torch.int64)
-        data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
+            data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
+            data.n_atoms = graph["num_nodes"]
+            data.n_bonds = graph["num_edges"]
+            data.n_angles = graph["num_angles"]
 
-        return data
+            data.masked_atom_indices = torch.from_numpy(graph["masked_atom_indices"]).to(torch.int64)
+            data.masked_bond_indices = torch.from_numpy(graph["masked_bond_indices"]).to(torch.int64)
+            data.masked_angle_indices = torch.from_numpy(graph["masked_angle_indices"]).to(torch.int64)
+            data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
+
+            data.smiles = Chem.MolToSmiles(mol)
+
+            return data
+
+        except Exception:
+            return None
+
+    def process_molecules(self, molecules):
+        results = []
+        with ThreadPoolExecutor() as executor:
+            # 使用 tqdm 显示进度条
+            for result in tqdm(executor.map(self.process_molecule, molecules), total=len(molecules)):
+                results.append(result)
+        return results
 
     def process_egeognn(self):
-        # print(f"{os.cpu_count()} cpus to be used")
-        with ProcessPoolExecutor() as executor:
-            results = list(tqdm(executor.map(self.process_molecule, self.mol_list), total=len(self.mol_list)))
 
-        for idx, data in enumerate(results):
+        if self.mpi:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            rank = comm.Get_rank()
+            size = comm.Get_size()
+
+            chunk_size = len(self.mol_list) // size
+
+            start_index = rank * chunk_size
+            end_index = (rank + 1) * chunk_size if rank != size - 1 else len(self.mol_list)
+
+            local_molecules = self.mol_list[start_index:end_index]
+            results = self.process_molecules(local_molecules)
+            all_results = comm.gather(results, root=0)
+
+            if rank == 0:
+                final_results = [item for sublist in all_results for item in sublist if item is not None]
+                for idx, data in enumerate(final_results):
+                    torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
+
+                total_num = len(final_results)
+                train_num = int(total_num * 0.8)
+                valid_num = int((total_num - train_num) / 2)
+
+                train_idx = range(train_num)
+                valid_idx = range(train_num, train_num + valid_num)
+                test_idx = range(train_num + valid_num, len(self.mol_list))
+
+                os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
+                torch.save(
+                    {
+                        "train": torch.tensor(train_idx, dtype=torch.long),
+                        "valid": torch.tensor(valid_idx, dtype=torch.long),
+                        "test": torch.tensor(test_idx, dtype=torch.long),
+                    },
+                    os.path.join(self.root, "split", "split_dict.pt"),
+                )
+                return
+
+        results = self.process_molecules(self.mol_list)
+        final_results = [item for item in results if item is not None]
+        for idx, data in enumerate(final_results):
             torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
-        train_num = int(len(self.mol_list) * 0.8)
-        valid_num = int((len(self.mol_list) - train_num) / 2)
+        total_num = len(final_results)
+        train_num = int(total_num * 0.8)
+        valid_num = int((total_num - train_num) / 2)
 
         train_idx = range(train_num)
         valid_idx = range(train_num, train_num + valid_num)
