@@ -260,29 +260,26 @@ class EgeognnPretrainedDataset(Dataset):
         )
 
 
-class EgeognnFinetuneDataset(InMemoryDataset):
+class EgeognnFinetuneDataset(Dataset):
     def __init__(
             self,
             root,
             base_path,
-            dataset_name,
             atom_names,
             bond_names,
             endpoints,
             remove_hs=False,
             transform=None,
             pre_transform=None,
-            dev=False
+            dev=False,
+            useMPI=False
     ):
         assert dev in [True, False]
 
-        if endpoints is None:
-            endpoints = []
-
         if remove_hs:
-            self.folder = os.path.join(root, f"egeognn_{dataset_name}_rh")
+            self.folder = os.path.join(root, f"egeognn_downstream_finetune_rh")
         else:
-            self.folder = os.path.join(root, f"egeognn_{dataset_name}")
+            self.folder = os.path.join(root, f"egeognn_downstream_finetune")
 
         self.remove_hs = remove_hs
         self.base_path = base_path
@@ -292,9 +289,53 @@ class EgeognnFinetuneDataset(InMemoryDataset):
 
         self.dev = dev
         self.endpoints = endpoints
+        self.useMPI = useMPI
 
+        self.mol_list = []
+        self.label_list = []
+        self.endpoint_list = []
+
+        curr_index = 0
+
+        for endpoint in self.endpoints:
+            input_file = os.path.join(self.base_path, f"{endpoint}.csv")
+            df = pd.read_csv(input_file, nrows=[None, 10][self.dev])
+            df = df.sample(frac=1.0).copy()
+
+            _smiles_list = df['smiles'].values
+            _label_list = df[endpoint].values
+
+            for i, smiles in enumerate(_smiles_list):
+                if "." in smiles:
+                    continue
+                tmp_mol = Chem.MolFromSmiles(smiles.strip())
+
+                try:
+                    mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
+                    if mol.GetNumBonds() < 1:
+                        continue
+
+                    mol.SetProp('idx', f"{curr_index}")
+                    self.endpoint_list.append(endpoint)
+                    self.mol_list.append(mol)
+
+                    label = _label_list[i]
+                    label_mean = _label_list.mean()
+                    label_std = _label_list.std() + 1e-5
+                    self.label_list.append(
+                        [
+                            (label - label_mean) / label_std,
+                            label_mean, label_std
+                        ]
+                    )
+
+                    curr_index += 1
+
+                except Exception:
+                    continue
+
+        self.label_list = np.array(self.label_list)
         super().__init__(self.folder, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
 
     @property
     def raw_file_names(self):
@@ -303,7 +344,7 @@ class EgeognnFinetuneDataset(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        return f"egeognn_{self.dataset_name}_finetune_processed.pt"
+        return [f"egeognn_downstream_processed_{i}.pt" for i in range(len(self.mol_list))]
 
     def download(self):
         if os.path.exists(self.processed_paths[0]):
@@ -311,9 +352,16 @@ class EgeognnFinetuneDataset(InMemoryDataset):
         else:
             assert os.path.exists(self.base_path)
 
+    def len(self):
+        return len(self.processed_file_names)
+
+    def get(self, idx):
+        data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[idx]))
+        return data
+
     def process(self):
         print("Converting pickle files into graphs...")
-        self.process_egeognn()
+        self.process_egeognn_finetune()
 
     def get_idx_split(self):
         path = os.path.join(self.root, "split")
@@ -342,72 +390,96 @@ class EgeognnFinetuneDataset(InMemoryDataset):
             atom_poses=atom_poses
         )
 
-    def process_egeognn(self):
-        train_idx = []
-        valid_idx = []
-        test_idx = []
-        data_list = []
+    def process_molecule(self, mol):
+        try:
+            graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
 
-        valid_conformation = 0
+            data = CustomData()
+            data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
+            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
+            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
 
-        for endpoint in self.endpoints:
-            input_file = os.path.join(self.base_path, f"{endpoint}.csv")
-            df = pd.read_csv(input_file, nrows=[10, None][self.dev])
+            data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
+            data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
+            data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
+            data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
+            data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
 
-            mol_list = df['smiles'].map(lambda x: Chem.MolFromSmiles(x)).values
-            labels = df[endpoint].values
+            data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
+            data.n_atoms = graph["num_nodes"]
+            data.n_bonds = graph["num_edges"]
+            data.n_angles = graph["num_angles"]
 
-            for i, mol in tqdm(enumerate(mol_list), total=len(mol_list)):
-                if self.remove_hs:
-                    try:
-                        mol = RemoveHs(mol)
-                    except Exception:
-                        continue
+            idx = int(mol.GetProp("idx"))
+            data.label = torch.from_numpy(self.label_list[idx]).to(torch.float32)
+            data.endpoint = self.endpoint_list[idx]
+            data.smiles = Chem.MolToSmiles(mol)
 
-                if "." in Chem.MolToSmiles(mol):
-                    continue
-                if mol.GetNumBonds() < 1:
-                    continue
+            return data
 
-                graph = self.mol_to_egeognn_graph_data_MMFF3d(mol, numConfs=3)
+        except Exception:
+            return None
 
-                data = CustomData()
-                data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
-                data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
-                data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
+    def process_molecules(self, molecules):
+        results = []
+        with ThreadPoolExecutor() as executor:
+            for result in tqdm(executor.map(self.process_molecule, molecules), total=len(molecules)):
+                results.append(result)
+        return results
 
-                data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
-                data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
-                data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
-                data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
-                data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
+    def process_egeognn_finetune(self):
+        if self.useMPI:
+            from  mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            rank = comm.Get_rank()
+            size = comm.Get_size()
 
-                data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
-                data.n_atoms = graph["num_nodes"]
-                data.n_bonds = graph["num_edges"]
-                data.n_angles = graph["num_angles"]
+            chunk_size = len(self.mol_list) // size
 
-                data.labels = torch.tensor(labels[i]).to(torch.float32)
-                data.label_mean = torch.tensor(labels.mean()).to(torch.float32)
-                data.label_std = torch.tensor(labels.std()).to(torch.float32)
+            start_index = rank * chunk_size
+            end_index = (rank + 1) * chunk_size if rank != size - 1 else len(self.mol_list)
 
-                data_list.append(data)
+            local_molecules = self.mol_list[start_index:end_index]
+            results = self.process_molecules(local_molecules)
+            all_results = comm.gather(results, root=0)
 
-                if random.random() < 0.8:
-                    train_idx.append(valid_conformation)
-                    valid_conformation += 1
-                    continue
-                if random.random() < 0.5:
-                    valid_idx.append(valid_conformation)
-                    valid_conformation += 1
-                    continue
-                test_idx.append(valid_conformation)
-                valid_conformation += 1
+            if rank == 0:
+                final_results = [item for sublist in all_results for item in sublist if item is not None]
+                for idx, data in enumerate(final_results):
+                    torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
-        graphs, slices = self.collate(data_list)
+                total_num = len(final_results)
+                train_num = int(total_num * 0.8)
+                valid_num = int((total_num - train_num) / 2)
 
-        print("Saving...")
-        torch.save((graphs, slices), self.processed_paths[0])
+                train_idx = range(train_num)
+                valid_idx = range(train_num, train_num + valid_num)
+                test_idx = range(train_num + valid_num, len(self.mol_list))
+
+                os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
+                torch.save(
+                    {
+                        "train": torch.tensor(train_idx, dtype=torch.long),
+                        "valid": torch.tensor(valid_idx, dtype=torch.long),
+                        "test": torch.tensor(test_idx, dtype=torch.long),
+                    },
+                    os.path.join(self.root, "split", "split_dict.pt"),
+                )
+                return
+
+        results = self.process_molecules(self.mol_list)
+        final_results = [item for item in results if item is not None]
+        for idx, data in enumerate(final_results):
+            torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
+
+        total_num = len(final_results)
+        train_num = int(total_num * 0.8)
+        valid_num = int((total_num - train_num) / 2)
+
+        train_idx = range(train_num)
+        valid_idx = range(train_num, train_num + valid_num)
+        test_idx = range(train_num + valid_num, len(self.mol_list))
+
         os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
         torch.save(
             {
