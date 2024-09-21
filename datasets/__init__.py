@@ -11,7 +11,7 @@ from rdkit import Chem
 from rdkit.Chem.rdmolops import RemoveHs
 from sklearn.metrics import pairwise_distances
 from torch import Tensor
-from torch_geometric.data import InMemoryDataset, Data, Dataset
+from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 from torch_sparse import SparseTensor
 from tqdm import tqdm
@@ -53,25 +53,33 @@ class EgeognnPretrainedDataset(Dataset):
         input_file = os.path.join(self.base_path, f"{self.dataset_name}.smi")
         with open(input_file) as f:
             smiles_list = f.readlines()
+        random.shuffle(smiles_list)
 
-        self.mol_list = []
+        final_mol_list = self.load_smiles_list(smiles_list)
+        self.mol_list = [mol for mol in final_mol_list]
 
-        for smiles in smiles_list:
-            if "." in smiles:
-                continue
-            tmp_mol = Chem.MolFromSmiles(smiles.strip())
-            try:
-                mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
-                if mol.GetNumBonds() < 1:
-                    continue
-                self.mol_list.append(mol)
-            except Exception:
-                continue
-
-        random.shuffle(self.mol_list)
         self.mpi = mpi
-
         super().__init__(self.folder, transform, pre_transform)
+
+    def load_smiles(self, smiles):
+        if "." in smiles:
+            return
+        tmp_mol = Chem.MolFromSmiles(smiles.strip())
+        try:
+            mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
+            if mol.GetNumBonds() < 1:
+                return
+            return mol
+        except Exception:
+            return
+
+    def load_smiles_list(self, smiles_list):
+        print("Convert Smiles to molecule")
+        mol_list = []
+        with ThreadPoolExecutor() as executor:
+            for result in tqdm(executor.map(self.load_smiles, smiles_list), total=len(smiles_list)):
+                mol_list.append(result)
+        return mol_list
 
     @property
     def raw_file_names(self):
@@ -190,8 +198,9 @@ class EgeognnPretrainedDataset(Dataset):
     def process_molecules(self, molecules):
         results = []
         with ThreadPoolExecutor() as executor:
-            # 使用 tqdm 显示进度条
             for result in tqdm(executor.map(self.process_molecule, molecules), total=len(molecules)):
+                if result is None:
+                    print(f"Failed to process a molecule.")
                 results.append(result)
         return results
 
@@ -210,16 +219,23 @@ class EgeognnPretrainedDataset(Dataset):
 
             local_molecules = self.mol_list[start_index:end_index]
             results = self.process_molecules(local_molecules)
-            all_results = comm.gather(results, root=0)
+            # all_results = comm.gather(results, root=0)
+
+            final_results = [item for item in results if item is not None]
+            for idx, data in enumerate(final_results):
+                torch.save(data, os.path.join(
+                    self.processed_dir,
+                    self.processed_file_names[range(start_index, end_index)[idx]]
+                ))
 
             if rank == 0:
-                final_results = [item for sublist in all_results for item in sublist if item is not None]
-                for idx, data in enumerate(final_results):
-                    torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
+                # final_results = [item for sublist in all_results for item in sublist if item is not None]
+                # for idx, data in enumerate(final_results):
+                #     torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
-                total_num = len(final_results)
+                total_num = len(self.mol_list)
                 train_num = int(total_num * 0.8)
-                valid_num = int((total_num - train_num) / 2)
+                valid_num = (total_num - train_num) // 2
 
                 train_idx = range(train_num)
                 valid_idx = range(train_num, train_num + valid_num)
@@ -234,14 +250,14 @@ class EgeognnPretrainedDataset(Dataset):
                     },
                     os.path.join(self.root, "split", "split_dict.pt"),
                 )
-                return
+            return
 
         results = self.process_molecules(self.mol_list)
         final_results = [item for item in results if item is not None]
         for idx, data in enumerate(final_results):
             torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
-        total_num = len(final_results)
+        total_num = len(self.mol_list)
         train_num = int(total_num * 0.8)
         valid_num = int((total_num - train_num) / 2)
 
