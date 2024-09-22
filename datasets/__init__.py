@@ -568,41 +568,50 @@ if __name__ == "__main__":
     #     mask_ratio=0.1
     # )
 
-    ENDPOINTS = [
-        'Cat_Intravenous_LD50',
-        'Cat_Oral_LD50',
-        'Chicken_Oral_LD50',
-        'Dog_Oral_LD50',
-        'Duck_Oral_LD50',
-        'Guineapig_Oral_LD50',
-        'Mouse_Intramuscular_LD50',
-        'Mouse_Intraperitoneal_LD50',
-        'Mouse_Intravenous_LD50',
-        'Mouse_Oral_LD50',
-        'Mouse_Subcutaneous_LD50',
-        'Rabbit_Intravenous_LD50',
-        'Rabbit_Oral_LD50',
-        'Rat_Inhalation_LC50',
-        'Rat_Intraperitoneal_LD50',
-        'Rat_Intravenous_LD50',
-        'Rat_Oral_LD50',
-        'Rat_Skin_LD50',
-        'Rat_Subcutaneous_LD50'
-    ]
+    # ENDPOINTS = [
+    #     'Cat_Intravenous_LD50',
+    #     'Cat_Oral_LD50',
+    #     'Chicken_Oral_LD50',
+    #     'Dog_Oral_LD50',
+    #     'Duck_Oral_LD50',
+    #     'Guineapig_Oral_LD50',
+    #     'Mouse_Intramuscular_LD50',
+    #     'Mouse_Intraperitoneal_LD50',
+    #     'Mouse_Intravenous_LD50',
+    #     'Mouse_Oral_LD50',
+    #     'Mouse_Subcutaneous_LD50',
+    #     'Rabbit_Intravenous_LD50',
+    #     'Rabbit_Oral_LD50',
+    #     'Rat_Inhalation_LC50',
+    #     'Rat_Intraperitoneal_LD50',
+    #     'Rat_Intravenous_LD50',
+    #     'Rat_Oral_LD50',
+    #     'Rat_Skin_LD50',
+    #     'Rat_Subcutaneous_LD50'
+    # ]
+    #
+    # dataset = EgeognnFinetuneDataset(
+    #     root='../data/downstream/toxicity',
+    #     base_path="../data/downstream/toxicity",
+    #     atom_names=configs["atom_names"],
+    #     bond_names=configs["bond_names"],
+    #     endpoints=ENDPOINTS,
+    #     remove_hs=True,
+    #     dev=True
+    # )
 
-    dataset = EgeognnFinetuneDataset(
-        root='../data/downstream/toxicity',
-        base_path="../data/downstream/toxicity",
+    smiles_list = "C1=CC=C(C=C1)CSCC2=NS(=O)(=O)C3=CC(=C(C=C3N2)Cl)S(=O)(=O)N,CC(=O)OC1=CC=CC=C1C(=O)O," \
+                  "CN1CCC[C@H]1COc1cccc(Cl)c1,C1=CC=C(C(=C1)C(=O)OC2=CC=CC=C2C(=O)O)O,COc1ccc2[nH]cc(C[C@H]3CCCN3C)c2c1"
+    dataset = EgeognnInferenceDataset(
         atom_names=configs["atom_names"],
         bond_names=configs["bond_names"],
-        endpoints=ENDPOINTS,
         remove_hs=True,
-        dev=True
+        smiles_list=smiles_list
     )
 
     demo_loader = DataLoader(
         dataset,
-        batch_size=16,
+        batch_size=2,
         shuffle=True,
         num_workers=10
     )
