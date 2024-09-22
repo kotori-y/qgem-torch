@@ -12,8 +12,7 @@ class DownstreamModel(nn.Module):
             self, compound_encoder: EGeoGNNModel,
             hidden_size, dropout_rate, n_layers,
             endpoints, frozen_encoder,
-            task_type='class',
-
+            task_type='regression',
     ):
         super(DownstreamModel, self).__init__()
         self.task_type = task_type
