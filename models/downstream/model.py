@@ -1,10 +1,10 @@
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
 
 from models.conv import MLP
 from models.gin import EGeoGNNModel
-from sklearn.metrics import r2_score
 
 
 class DownstreamModel(nn.Module):
@@ -13,6 +13,7 @@ class DownstreamModel(nn.Module):
             hidden_size, dropout_rate, n_layers,
             endpoints, frozen_encoder,
             task_type='regression',
+            inference=False
     ):
         super(DownstreamModel, self).__init__()
         self.task_type = task_type
@@ -40,6 +41,8 @@ class DownstreamModel(nn.Module):
 
         if self.task_type == 'class':
             self.out_act = nn.Sigmoid()
+
+        self.inference = inference
 
     def forward(
             self,
@@ -80,6 +83,9 @@ class DownstreamModel(nn.Module):
             )
 
         graph_repr = self.norm(graph_repr)
+        if self.inference:
+            graph_repr = graph_repr.repeat_interleave(len(tgt_endpoints), axis=0)
+            tgt_endpoints = np.tile(tgt_endpoints, num_graphs)
 
         pred = torch.cat([
             self.downstream_layer[self.layer_mapping[endpoint]](graph_repr[i])
