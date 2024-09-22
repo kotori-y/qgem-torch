@@ -68,6 +68,7 @@ class WarmCosine:
         else:
             return self.eta_min + self.lr_step * step
 
+
 def exempt_parameters(src_list, ref_list):
     """Remove element from src_list that is in ref_list"""
     res = []

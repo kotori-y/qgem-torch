@@ -1,16 +1,14 @@
+import argparse
+import io
 import json
 import os
-from os.path import join, exists, basename
-import argparse
+import random
+from collections import defaultdict
 from pathlib import Path
-import io
 
 import numpy as np
 import torch
-
-from torch import nn, optim
-from torch.optim.lr_scheduler import LambdaLR
-
+from torch import optim
 from torch.utils.data import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.loader import DataLoader
@@ -18,24 +16,26 @@ from tqdm import tqdm
 
 from datasets import EgeognnFinetuneDataset
 from models.downstream import DownstreamModel
-from utils import WarmCosine, exempt_parameters, init_distributed_mode
+from utils import exempt_parameters, init_distributed_mode
 
 
 def train(
-        model, device,
-        loader, criterion,
+        model, device, loader,
         encoder_opt, head_opt,
         args
 ):
-    list_loss = []
     model.train()
 
+    loss_accum_dict = defaultdict(float)
+    counter = {}
     pbar = tqdm(loader, desc="Iteration", disable=args.disable_tqdm)
+
     for step, batch in enumerate(pbar):
         input_params = {
             "AtomBondGraph_edges": batch.AtomBondGraph_edges.to(device),
             "BondAngleGraph_edges": batch.BondAngleGraph_edges.to(device),
             "AngleDihedralGraph_edges": batch.AngleDihedralGraph_edges.to(device),
+            "pos": batch.atom_poses.to(device),
             "x": batch.node_feat.to(device),
             "bond_attr": batch.edge_attr.to(device),
             "bond_lengths": batch.bond_lengths.to(device),
@@ -45,77 +45,110 @@ def train(
             "num_atoms": batch.n_atoms.to(device),
             "num_bonds": batch.n_bonds.to(device),
             "num_angles": batch.n_angles.to(device),
-            "atom_batch": batch.batch.to(device)
+            "atom_batch": batch.batch.to(device),
+            "tgt_endpoints": batch.endpoint
         }
 
-        if len(batch.labels) < args.batch_size * 0.5:
+        if len(batch.label) < args.batch_size * 0.5:
             continue
         if batch.node_feat.shape[0] == 1 or batch.batch[-1] == 0:
             continue
 
-        encoder_opt.zero_grad()
+        if encoder_opt is not None:
+            encoder_opt.zero_grad()
         head_opt.zero_grad()
 
-        loss, pred = model(**input_params)
+        pred = model(**input_params)
+
+        label, label_mean, label_std = batch.label.reshape(-1, 3).T
+        label = label.to(device)
+        label_mean = label_mean.to(device)
+        label_std = label_std.to(device)
+
+        if args.distributed:
+            loss, loss_dict = model.module.compute_loss(
+                pred, label, batch.endpoint
+            )
+        else:
+            loss, loss_dict = model.compute_loss(pred, label, batch.endpoint)
 
         loss.backward()
-        encoder_opt.step()
+        if encoder_opt is not None:
+            encoder_opt.step()
         head_opt.step()
 
-        labels = batch.labels
-        label_mean = batch.label_mean
-        label_std = batch.label_std
+        for k, v in loss_dict.items():
+            counter[k] = counter.get(k, 0) + 1
+            loss_accum_dict[k] += v
 
-        scaled_labels = (labels - label_mean) / (label_std + 1e-5)
-        scaled_labels = paddle.to_tensor(scaled_labels, 'float32')
+        if step % args.log_interval == 0:
+            description = f"Iteration loss: {loss_accum_dict['loss'] / (step + 1):6.4f}"
+            pbar.set_description(description)
 
-        loss = process_nan_value(preds, scaled_labels, criterion)
-        loss.backward()
+    for k in loss_accum_dict.keys():
+        loss_accum_dict[k] /= counter[k]
 
-    #     encoder_opt.step()
-    #     head_opt.step()
-    #     encoder_opt.clear_grad()
-    #     head_opt.clear_grad()
-    #     list_loss.append(loss.numpy())
-    # return np.mean(list_loss)
+    return loss_accum_dict
 
 
-def evaluate(
-        args,
-        model, label_mean, label_std,
-        test_dataset, collate_fn, metric):
-    """
-    Define the evaluate function
-    In the dataset, a proportion of labels are blank. So we use a `valid` tensor
-    to help eliminate these blank labels in both training and evaluation phase.
-    """
-    data_gen = test_dataset.get_data_loader(
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=False,
-        collate_fn=collate_fn)
-    total_pred = []
-    total_label = []
-
+def evaluate(model, device, loader, args):
     model.eval()
 
-    for atom_bond_graphs, bond_angle_graphs, angle_dihedral_graphs, labels in data_gen:
-        atom_bond_graphs = atom_bond_graphs.tensor()
-        bond_angle_graphs = bond_angle_graphs.tensor()
-        angle_dihedral_graphs = angle_dihedral_graphs.tensor()
-        labels = paddle.to_tensor(labels, 'float32')
+    loss_accum_dict = defaultdict(float)
+    counter = {}
+    pbar = tqdm(loader, desc="Iteration", disable=args.disable_tqdm)
 
-        scaled_preds = model(atom_bond_graphs, bond_angle_graphs, angle_dihedral_graphs)
-        preds = scaled_preds.numpy() * label_std + label_mean
-        total_pred.append(preds)
-        total_label.append(labels.numpy())
-    total_pred = np.concatenate(total_pred, 0)
-    total_label = np.concatenate(total_label, 0)
+    for step, batch in enumerate(pbar):
+        input_params = {
+            "AtomBondGraph_edges": batch.AtomBondGraph_edges.to(device),
+            "BondAngleGraph_edges": batch.BondAngleGraph_edges.to(device),
+            "AngleDihedralGraph_edges": batch.AngleDihedralGraph_edges.to(device),
+            "pos": batch.atom_poses.to(device),
+            "x": batch.node_feat.to(device),
+            "bond_attr": batch.edge_attr.to(device),
+            "bond_lengths": batch.bond_lengths.to(device),
+            "bond_angles": batch.bond_angles.to(device),
+            "dihedral_angles": batch.dihedral_angles.to(device),
+            "num_graphs": batch.num_graphs,
+            "num_atoms": batch.n_atoms.to(device),
+            "num_bonds": batch.n_bonds.to(device),
+            "num_angles": batch.n_angles.to(device),
+            "atom_batch": batch.batch.to(device),
+            "tgt_endpoints": batch.endpoint
+        }
 
-    if metric == 'rmse':
-        return calc_rmse(total_label, total_pred)
-    else:
-        return calc_mae(total_label, total_pred)
+        if len(batch.label) < args.batch_size * 0.5:
+            continue
+        if batch.node_feat.shape[0] == 1 or batch.batch[-1] == 0:
+            continue
+
+        with torch.no_grad():
+            pred = model(**input_params)
+
+        label, label_mean, label_std = batch.label.reshape(-1, 3).T
+        label = label.to(device)
+        label_mean = label_mean.to(device)
+        label_std = label_std.to(device)
+
+        if args.distributed:
+            loss, loss_dict = model.module.compute_loss(
+                pred, label, batch.endpoint
+            )
+        else:
+            loss, loss_dict = model.compute_loss(pred, label, batch.endpoint)
+
+        for k, v in loss_dict.items():
+            counter[k] = counter.get(k, 0) + 1
+            loss_accum_dict[k] += v
+
+        if step % args.log_interval == 0:
+            description = f"Iteration loss: {loss_accum_dict['loss'] / (step + 1):6.4f}"
+            pbar.set_description(description)
+
+    for k in loss_accum_dict.keys():
+        loss_accum_dict[k] /= counter[k]
+
+    return loss_accum_dict
 
 
 def get_label_stat(dataset):
@@ -127,37 +160,43 @@ def get_label_stat(dataset):
     return np.min(labels[~nan_mask]), np.max(labels[~nan_mask]), np.mean(labels[~nan_mask])
 
 
-def get_metric(dataset_name):
-    """tbd"""
-    if dataset_name in [
-        'esol', 'freesolv', 'lipophilicity',
-        'logpow', 'solubility', 'boilingpoint',
-        'pka', 'diy', 'special_pc'
-    ] or 'sp' in dataset_name:
-        return 'rmse'
-
-    if dataset_name in ['qm7', 'qm8', 'qm9', 'qm9_gdb', 'quandb']:
-        return 'mae'
-
-    raise ValueError(dataset_name)
-
-
 def main(args):
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    random.seed(args.seed)
+
     device = torch.device(args.device)
     with open(args.config_path) as f:
         config = json.load(f)
 
     dataset = EgeognnFinetuneDataset(
         root=args.dataset_root,
-        dataset_name=args.dataset_name,
         remove_hs=args.remove_hs,
         base_path=args.dataset_base_path,
         atom_names=config["atom_names"],
         bond_names=config["bond_names"],
-        dev=args.dev
+        dev=args.dev,
+        endpoints=args.endpoints,
+        useMPI=args.useMPI
     )
 
-    split_idx = dataset.get_idx_split()
+    if args.dataset:
+        return None
+
+    total_num = len(dataset)
+    train_num = int(total_num * 0.8)
+    # valid_num = total_num - train_num
+
+    train_idx = list(random.sample(range(total_num), train_num))
+    valid_idx = list(set(range(total_num)) - set(train_idx))
+    # test_idx = range(train_num + valid_num, total_num)
+
+    split_idx = {
+        "train": torch.tensor(train_idx, dtype=torch.long),
+        "valid": torch.tensor(valid_idx, dtype=torch.long)
+        # "test": torch.tensor(test_idx, dtype=torch.long),
+    }
 
     train_loader = DataLoader(
         dataset[split_idx["train"]],
@@ -170,9 +209,16 @@ def main(args):
     valid_loader = DataLoader(
         dataset[split_idx["valid"]],
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=args.num_workers
     )
+
+    # test_loader = DataLoader(
+    #     dataset[split_idx["test"]],
+    #     batch_size=args.batch_size,
+    #     shuffle=False,
+    #     num_workers=args.num_workers
+    # )
 
     if args.distributed:
         sampler_train = DistributedSampler(dataset)
@@ -196,9 +242,14 @@ def main(args):
         "num_message_passing_steps": args.num_message_passing_steps,
         "atom_names": config["atom_names"],
         "bond_names": config["bond_names"],
-        "global_reducer": 'sum'
+        "global_reducer": 'sum',
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
+
+    if args.encoder_eval_from is not None:
+        assert os.path.exists(args.encoder_eval_from)
+        checkpoint = torch.load(args.encoder_eval_from, map_location=device)["compound_encoder_state_dict"]
+        compound_encoder.load_state_dict(checkpoint)
 
     model_params = {
         "compound_encoder": compound_encoder,
@@ -206,7 +257,8 @@ def main(args):
         "hidden_size": args.hidden_size,
         "dropout_rate": args.dropout_rate,
         "task_type": args.task_type,
-        "num_tasks": 1
+        "endpoints": args.endpoints,
+        "frozen_encoder": args.frozen_encoder
     }
     model = DownstreamModel(**model_params).to(device)
 
@@ -228,16 +280,14 @@ def main(args):
     ) as tgt:
         print(args, file=tgt)
 
-    if args.eval_from is not None:
-        assert os.path.exists(args.eval_from)
-        checkpoint = torch.load(args.eval_from, map_location=device)["model_state_dict"]
-        model_without_ddp.load_state_dict(checkpoint)
-
     num_params = sum(p.numel() for p in model_without_ddp.parameters())
     print(f"#Params: {num_params}")
 
-    encoder_params = compound_encoder.parameters()
+    encoder_params = list(compound_encoder.parameters())
     head_params = exempt_parameters(model_without_ddp.parameters(), encoder_params)
+    if args.frozen_encoder:
+        for params in encoder_params:
+            params.requires_grad = False
 
     if args.use_adamw:
         encoder_optimizer = optim.AdamW(
@@ -245,7 +295,7 @@ def main(args):
             lr=args.encoder_lr,
             betas=(0.9, args.beta),
             weight_decay=args.weight_decay,
-        )
+        ) if not args.frozen_encoder else None
         head_optimizer = optim.AdamW(
             head_params,
             lr=args.head_lr,
@@ -258,7 +308,7 @@ def main(args):
             lr=args.encoder_lr,
             betas=(0.9, args.beta),
             weight_decay=args.weight_decay,
-        )
+        ) if not args.frozen_encoder else None
         head_optimizer = optim.Adam(
             head_params,
             lr=args.head_lr,
@@ -272,7 +322,9 @@ def main(args):
     #     lrscheduler = WarmCosine(tmax=len(train_loader) * args.period, warmup=int(4e3))
     #     scheduler = LambdaLR(optimizer, lambda x: lrscheduler.step(x))
 
-    criterion = nn.MSELoss(reduction='none')
+    train_curve = []
+    valid_curve = []
+    # test_curve = []
 
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
@@ -281,27 +333,68 @@ def main(args):
             sampler_train.set_epoch(epoch)
 
         print("Training...")
-        train(
-            model=model, device=device,
-            loader=train_loader, criterion=criterion,
-            encoder_opt=encoder_optimizer, head_opt=head_optimizer,
+        train_dict = train(
+            model=model,
+            device=device,
+            loader=train_loader,
+            encoder_opt=encoder_optimizer,
+            head_opt=head_optimizer,
             args=args
         )
 
         print("Evaluating...")
         valid_dict = evaluate(model, device, valid_loader, args)
+        # test_dict = evaluate(model, device, test_loader, args)
+
+        if args.checkpoint_dir:
+            print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
+
+        train_pref = train_dict['loss']
+        valid_pref = valid_dict['loss']
+        # test_pref = test_dict['loss']
+
+        train_curve.append(train_pref)
+        valid_curve.append(valid_pref)
+        # test_curve.append(test_pref)
+
+        if args.checkpoint_dir:
+            logs = {"epoch": epoch, "Train": train_dict, "Valid": valid_dict}
+            with io.open(
+                    os.path.join(args.checkpoint_dir, "log.txt"), "a", encoding="utf8", newline="\n"
+            ) as tgt:
+                print(json.dumps(logs), file=tgt)
+
+            checkpoint = {
+                "epoch": epoch,
+                "compound_encoder": compound_encoder.state_dict(),
+                "model_state_dict": model_without_ddp.state_dict(),
+                "encoder_optimizer_state_dict": encoder_optimizer.state_dict() if not args.frozen_encoder else {},
+                "head_optimizer_state_dict": head_optimizer.state_dict(),
+                # "scheduler_state_dict": scheduler.state_dict(),
+                "args": args,
+            }
+            torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
+            if args.enable_tb:
+                tb_writer = SummaryWriter(args.checkpoint_dir)
+                tb_writer.add_scalar("evaluation/train", train_pref, epoch)
+                tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
+                # tb_writer.add_scalar("evaluation/test", test_pref, epoch)
+                for k, v in train_dict.items():
+                    tb_writer.add_scalar(f"training/{k}", v, epoch)
 
 
 def main_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dev", action='store_true', default=False)
+    parser.add_argument("--dataset", action='store_true', default=False)
     parser.add_argument("--device", type=str, default='cpu')
+
+    parser.add_argument("--task-type", type=str)
 
     parser.add_argument("--config-path", type=str)
 
     parser.add_argument("--dataset-root", type=str)
     parser.add_argument("--dataset-base-path", type=str)
-    parser.add_argument("--dataset-name", type=str)
 
     parser.add_argument("--remove-hs", action='store_true', default=False)
 
@@ -317,7 +410,7 @@ def main_cli():
     parser.add_argument("--dropout-rate", type=float, default=0.1)
 
     parser.add_argument("--checkpoint-dir", type=str, default="")
-    parser.add_argument("--eval-from", type=str, default=None)
+    parser.add_argument("--encoder-eval-from", type=str, default=None)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--use-adamw", action='store_true', default=False)
@@ -330,12 +423,18 @@ def main_cli():
     parser.add_argument("--lr-warmup", action='store_true', default=False)
 
     parser.add_argument("--distributed", action='store_true', default=False)
+    parser.add_argument("--useMPI", action='store_true', default=False)
+    parser.add_argument("--endpoints", type=str, nargs="+")
 
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--log-interval", type=int, default=5)
     parser.add_argument("--grad-norm", type=float, default=None)
 
     parser.add_argument("--model-ver", type=str, default='gat')
+    parser.add_argument("--frozen-encoder", action='store_true', default=False)
+    parser.add_argument("--enable-tb", action='store_true', default=False)
+
+    parser.add_argument("--seed", type=int, default=2024)
 
     args = parser.parse_args()
     print(args)
@@ -347,4 +446,3 @@ def main_cli():
 
 if __name__ == '__main__':
     main_cli()
-

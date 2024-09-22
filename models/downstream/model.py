@@ -1,55 +1,112 @@
+import torch
 from torch import nn
+import torch.nn.functional as F
 
 from models.conv import MLP
 from models.gin import EGeoGNNModel
+from sklearn.metrics import r2_score
 
 
 class DownstreamModel(nn.Module):
     def __init__(
             self, compound_encoder: EGeoGNNModel,
-            hidden_size, dropout_rate, n_layers, task_type='class', num_tasks=1
+            hidden_size, dropout_rate, n_layers,
+            endpoints, frozen_encoder,
+            task_type='class',
+
     ):
         super(DownstreamModel, self).__init__()
         self.task_type = task_type
-        self.num_tasks = num_tasks
+        self.endpoints = endpoints
+        self.frozen_encoder = frozen_encoder
+
+        num_tasks = len(endpoints)
+
+        self.layer_mapping = dict(zip(endpoints, range(num_tasks)))
+
+        self.downstream_layer = nn.ModuleList([
+            MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=False,
+                activation=nn.ReLU,
+                layernorm_before=False,
+                use_bn=False,
+                dropout=dropout_rate
+            ) for _ in range(num_tasks)
+        ])
 
         self.compound_encoder = compound_encoder
         self.norm = nn.LayerNorm(compound_encoder.latent_size)
 
-        self.mlp = MLP(
-            input_size=compound_encoder.latent_size,
-            output_sizes=[hidden_size] * n_layers + [num_tasks],
-            use_layer_norm=False,
-            activation=nn.ReLU,
-            layernorm_before=False,
-            use_bn=False,
-            dropout=dropout_rate
-        )
         if self.task_type == 'class':
             self.out_act = nn.Sigmoid()
 
     def forward(
             self,
             AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
-            x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
+            pos, x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
             num_atoms, num_bonds, num_angles, num_graphs, atom_batch,
+            tgt_endpoints
     ):
-        _, _, _, _, graph_repr = self.compound_encoder(
-            AtomBondGraph_edges=AtomBondGraph_edges,
-            BondAngleGraph_edges=BondAngleGraph_edges,
-            AngleDihedralGraph_edges=AngleDihedralGraph_edges,
-            x=x, bond_attr=bond_attr, bond_lengths=bond_lengths,
-            bond_angles=bond_angles, dihedral_angles=dihedral_angles,
-            num_graphs=num_graphs, atom_batch=atom_batch,
-            num_atoms=num_atoms, num_bonds=num_bonds, num_angles=num_angles,
-            masked_atom_indices=None,
-            masked_bond_indices=None,
-            masked_angle_indices=None,
-            masked_dihedral_indices=None
-        )
+        if self.frozen_encoder:
+            self.compound_encoder.eval()
+            with torch.no_grad():
+                _, _, _, _, graph_repr = self.compound_encoder(
+                    AtomBondGraph_edges=AtomBondGraph_edges,
+                    BondAngleGraph_edges=BondAngleGraph_edges,
+                    AngleDihedralGraph_edges=AngleDihedralGraph_edges,
+                    pos=pos, x=x, bond_attr=bond_attr, bond_lengths=bond_lengths,
+                    bond_angles=bond_angles, dihedral_angles=dihedral_angles,
+                    num_graphs=num_graphs, atom_batch=atom_batch,
+                    num_atoms=num_atoms, num_bonds=num_bonds, num_angles=num_angles,
+                    masked_atom_indices=None,
+                    masked_bond_indices=None,
+                    masked_angle_indices=None,
+                    masked_dihedral_indices=None
+                )
+        else:
+            _, _, _, _, graph_repr = self.compound_encoder(
+                AtomBondGraph_edges=AtomBondGraph_edges,
+                BondAngleGraph_edges=BondAngleGraph_edges,
+                AngleDihedralGraph_edges=AngleDihedralGraph_edges,
+                pos=pos, x=x, bond_attr=bond_attr, bond_lengths=bond_lengths,
+                bond_angles=bond_angles, dihedral_angles=dihedral_angles,
+                num_graphs=num_graphs, atom_batch=atom_batch,
+                num_atoms=num_atoms, num_bonds=num_bonds, num_angles=num_angles,
+                masked_atom_indices=None,
+                masked_bond_indices=None,
+                masked_angle_indices=None,
+                masked_dihedral_indices=None
+            )
 
         graph_repr = self.norm(graph_repr)
-        pred = self.mlp(graph_repr)
+
+        pred = torch.cat([
+            self.downstream_layer[self.layer_mapping[endpoint]](graph_repr[i])
+            for i, endpoint in enumerate(tgt_endpoints)
+        ])
+
         if self.task_type == 'class':
             pred = self.out_act(pred)
         return pred
+
+    def compute_loss(self, pred, target, tgt_endpoints):
+        loss = 0
+        loss_dict = {}
+
+        uni_endpoints = list(set(tgt_endpoints))
+        for endpoint in uni_endpoints:
+            idx = [i for i, end in enumerate(tgt_endpoints) if end == endpoint]
+            idx = torch.tensor(idx).to(torch.int64).to(pred.device)
+
+            _pred = torch.index_select(pred, 0, idx)
+            _target = torch.index_select(target, 0, idx)
+            tmp_loss = torch.mean(F.l1_loss(_pred, _target))
+
+            loss += tmp_loss
+            loss_dict[endpoint] = tmp_loss.detach().item()
+
+        loss_dict['loss'] = loss.detach().item()
+        loss_dict['r2_score'] = r2_score(target.detach().cpu().numpy(), pred.detach().cpu().numpy())
+        return loss, loss_dict
