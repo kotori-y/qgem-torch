@@ -19,6 +19,8 @@ from tqdm import tqdm
 from datasets.featurizer import mol_to_egeognn_graph_data, mask_egeognn_graph
 from datasets.utils import MoleculePositionToolKit
 
+from torch.utils.data import Dataset as TorchDataset
+
 
 class EgeognnPretrainedDataset(Dataset):
     def __init__(
@@ -436,6 +438,90 @@ class EgeognnFinetuneDataset(Dataset):
         final_results = [item for item in results if item is not None]
         for idx, data in enumerate(final_results):
             torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
+
+
+class EgeognnInferenceDataset(TorchDataset):
+    def __init__(
+            self,
+            smiles_list,
+            atom_names,
+            bond_names,
+            remove_hs=False
+    ):
+        self.remove_hs = remove_hs
+
+        self.atom_names = atom_names
+        self.bond_names = bond_names
+
+        self.mol_list = []
+        self.endpoint_list = []
+
+        self.smiles_list = smiles_list.split(",")
+        self.mol_list = [self.load_smiles(smiles) for smiles in self.smiles_list]
+        self.data_list = self.process_egeognn_finetune()
+        super().__init__()
+
+    def __len__(self):
+        return len(self.mol_list)
+
+    def __getitem__(self, item):
+        return self.data_list[item]
+
+    def load_smiles(self, smiles):
+        if "." in smiles:
+            return
+        tmp_mol = Chem.MolFromSmiles(smiles.strip())
+        try:
+            mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
+            if mol.GetNumBonds() < 1:
+                return
+            return mol
+        except Exception:
+            return
+
+    def mol_to_egeognn_graph_data_MMFF3d(self, mol, numConfs=3):
+        if len(mol.GetAtoms()) <= 400:
+            mol, atom_poses = MoleculePositionToolKit.get_MMFF_atom_poses(mol, numConfs=numConfs, numThreads=0)
+        else:
+            atom_poses = MoleculePositionToolKit.get_2d_atom_poses(mol)
+
+        return mol_to_egeognn_graph_data(
+            mol=mol,
+            atom_names=self.atom_names,
+            bond_names=self.bond_names,
+            atom_poses=atom_poses
+        )
+
+    def process_molecule(self, mol):
+        try:
+            graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
+
+            data = CustomData()
+            data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
+            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
+            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
+
+            data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
+            data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
+            data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
+            data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
+            data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
+
+            data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
+            data.n_atoms = graph["num_nodes"]
+            data.n_bonds = graph["num_edges"]
+            data.n_angles = graph["num_angles"]
+
+            data.smiles = Chem.MolToSmiles(mol)
+
+            return data
+
+        except Exception:
+            return None
+
+    def process_egeognn_finetune(self):
+        data_list = [self.process_molecule(mol) for mol in self.mol_list]
+        return [x for x in data_list if x is not None]
 
 
 class CustomData(Data):
