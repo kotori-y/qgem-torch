@@ -208,30 +208,39 @@ class EGEM(nn.Module):
             self.Adc_loss = nn.CrossEntropyLoss()
 
     def _get_Blr_loss(self, bond_attr, bond_lengths, masked_bond_indices=None):
+        pred = self.Blr_mlp(bond_attr)
+        loss = self.Blr_loss(pred, bond_lengths.unsqueeze(-1))
+
         if masked_bond_indices is not None:
             bond_lengths = bond_lengths[masked_bond_indices]
             bond_attr = bond_attr[masked_bond_indices]
 
         pred = self.Blr_mlp(bond_attr)
-        loss = self.Blr_loss(pred, bond_lengths.unsqueeze(-1))
+        loss += self.Blr_loss(pred, bond_lengths.unsqueeze(-1))
         return loss
 
     def _get_Bar_loss(self, angle_attr, bond_angles, masked_angle_indices=None):
+        pred = self.Bar_mlp(angle_attr)
+        loss = self.Bar_loss(pred, bond_angles.unsqueeze(-1))
+
         if masked_angle_indices is not None:
             bond_angles = bond_angles[masked_angle_indices]
             angle_attr = angle_attr[masked_angle_indices]
 
         pred = self.Bar_mlp(angle_attr)
-        loss = self.Bar_loss(pred, bond_angles.unsqueeze(-1))
+        loss += self.Bar_loss(pred, bond_angles.unsqueeze(-1))
         return loss
 
     def _get_Dar_loss(self, dihedral_attr, dihedral_angles, masked_dihedral_indices=None):
+        pred = self.Dar_mlp(dihedral_attr)
+        loss = self.Dar_loss(pred, dihedral_angles.unsqueeze(-1))
+
         if masked_dihedral_indices is not None:
             dihedral_angles = dihedral_angles[masked_dihedral_indices]
             dihedral_attr = dihedral_attr[masked_dihedral_indices]
 
         pred = self.Dar_mlp(dihedral_attr)
-        loss = self.Dar_loss(pred, dihedral_angles.unsqueeze(-1))
+        loss += self.Dar_loss(pred, dihedral_angles.unsqueeze(-1))
         return loss
 
     def compute_loss(

@@ -91,22 +91,10 @@ class DownstreamModel(nn.Module):
             pred = self.out_act(pred)
         return pred
 
-    def compute_loss(self, pred, target, tgt_endpoints):
-        loss = 0
+    def compute_loss(self, pred, target):
         loss_dict = {}
 
-        uni_endpoints = list(set(tgt_endpoints))
-        for endpoint in uni_endpoints:
-            idx = [i for i, end in enumerate(tgt_endpoints) if end == endpoint]
-            idx = torch.tensor(idx).to(torch.int64).to(pred.device)
-
-            _pred = torch.index_select(pred, 0, idx)
-            _target = torch.index_select(target, 0, idx)
-            tmp_loss = torch.mean(F.l1_loss(_pred, _target))
-
-            loss += tmp_loss
-            loss_dict[endpoint] = tmp_loss.detach().item()
-
+        loss = torch.mean(F.l1_loss(pred, target))
         loss_dict['loss'] = loss.detach().item()
-        loss_dict['r2_score'] = r2_score(target.detach().cpu().numpy(), pred.detach().cpu().numpy())
+
         return loss, loss_dict

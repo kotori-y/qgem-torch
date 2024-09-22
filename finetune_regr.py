@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from sklearn.metrics import r2_score
 from torch import optim
 from torch.utils.data import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
@@ -28,6 +29,8 @@ def train(
 
     loss_accum_dict = defaultdict(float)
     counter = {}
+    prediction_logs = {}
+
     pbar = tqdm(loader, desc="Iteration", disable=args.disable_tqdm)
 
     for step, batch in enumerate(pbar):
@@ -58,24 +61,30 @@ def train(
             encoder_opt.zero_grad()
         head_opt.zero_grad()
 
-        pred = model(**input_params)
+        pred_scaled = model(**input_params)
 
-        label, label_mean, label_std = batch.label.reshape(-1, 3).T
-        label = label.to(device)
+        label_scaled, label_mean, label_std = batch.label.reshape(-1, 3).T
+        label_scaled = label_scaled.to(device)
         label_mean = label_mean.to(device)
         label_std = label_std.to(device)
 
         if args.distributed:
-            loss, loss_dict = model.module.compute_loss(
-                pred, label, batch.endpoint
-            )
+            loss, loss_dict = model.module.compute_loss(pred_scaled, label_scaled)
         else:
-            loss, loss_dict = model.compute_loss(pred, label, batch.endpoint)
+            loss, loss_dict = model.compute_loss(pred_scaled, label_scaled)
 
         loss.backward()
         if encoder_opt is not None:
             encoder_opt.step()
         head_opt.step()
+
+        label = label_scaled * label_std + label_mean
+        pred = pred_scaled * label_std + label_mean
+        for i, endpoint in enumerate(batch.endpoint):
+            if endpoint not in prediction_logs:
+                prediction_logs[endpoint] = {'y_true': [], 'y_pred': []}
+            prediction_logs[endpoint]['y_true'].append(label[i].detach().item())
+            prediction_logs[endpoint]['y_pred'].append(pred[i].detach().item())
 
         for k, v in loss_dict.items():
             counter[k] = counter.get(k, 0) + 1
@@ -88,6 +97,9 @@ def train(
     for k in loss_accum_dict.keys():
         loss_accum_dict[k] /= counter[k]
 
+    for endpoint, results in prediction_logs.items():
+        loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
+
     return loss_accum_dict
 
 
@@ -96,6 +108,7 @@ def evaluate(model, device, loader, args):
 
     loss_accum_dict = defaultdict(float)
     counter = {}
+    prediction_logs = {}
     pbar = tqdm(loader, desc="Iteration", disable=args.disable_tqdm)
 
     for step, batch in enumerate(pbar):
@@ -123,19 +136,25 @@ def evaluate(model, device, loader, args):
             continue
 
         with torch.no_grad():
-            pred = model(**input_params)
+            pred_scaled = model(**input_params)
 
-        label, label_mean, label_std = batch.label.reshape(-1, 3).T
-        label = label.to(device)
+        label_scaled, label_mean, label_std = batch.label.reshape(-1, 3).T
+        label_scaled = label_scaled.to(device)
         label_mean = label_mean.to(device)
         label_std = label_std.to(device)
 
         if args.distributed:
-            loss, loss_dict = model.module.compute_loss(
-                pred, label, batch.endpoint
-            )
+            loss, loss_dict = model.module.compute_loss(pred_scaled, label_scaled)
         else:
-            loss, loss_dict = model.compute_loss(pred, label, batch.endpoint)
+            loss, loss_dict = model.compute_loss(pred_scaled, label_scaled)
+
+        label = (label_scaled * label_std) + label_mean
+        pred = (pred_scaled * label_std) + label_mean
+        for i, endpoint in enumerate(batch.endpoint):
+            if endpoint not in prediction_logs:
+                prediction_logs[endpoint] = {'y_true': [], 'y_pred': []}
+            prediction_logs[endpoint]['y_true'].append(label[i].detach().item())
+            prediction_logs[endpoint]['y_pred'].append(pred[i].detach().item())
 
         for k, v in loss_dict.items():
             counter[k] = counter.get(k, 0) + 1
@@ -147,6 +166,9 @@ def evaluate(model, device, loader, args):
 
     for k in loss_accum_dict.keys():
         loss_accum_dict[k] /= counter[k]
+
+    for endpoint, results in prediction_logs.items():
+        loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
 
     return loss_accum_dict
 

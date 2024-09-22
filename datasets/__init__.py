@@ -150,7 +150,9 @@ class EgeognnPretrainedDataset(Dataset):
         )
 
     def len(self):
-        return len(self.processed_file_names)
+        path = os.path.join(self.folder, 'processed')
+        files = os.listdir(path)
+        return len(files) - 2
 
     def get(self, idx):
         data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[idx]))
@@ -205,7 +207,6 @@ class EgeognnPretrainedDataset(Dataset):
         return results
 
     def process_egeognn(self):
-
         if self.mpi:
             from mpi4py import MPI
             comm = MPI.COMM_WORLD
@@ -222,58 +223,21 @@ class EgeognnPretrainedDataset(Dataset):
             # all_results = comm.gather(results, root=0)
 
             final_results = [item for item in results if item is not None]
+
+            print(rank, self.processed_file_names[range(start_index, end_index)[0]], start_index, end_index)
+
             for idx, data in enumerate(final_results):
                 torch.save(data, os.path.join(
                     self.processed_dir,
                     self.processed_file_names[range(start_index, end_index)[idx]]
                 ))
 
-            if rank == 0:
-                # final_results = [item for sublist in all_results for item in sublist if item is not None]
-                # for idx, data in enumerate(final_results):
-                #     torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
-
-                total_num = len(self.mol_list)
-                train_num = int(total_num * 0.8)
-                valid_num = (total_num - train_num) // 2
-
-                train_idx = range(train_num)
-                valid_idx = range(train_num, train_num + valid_num)
-                test_idx = range(train_num + valid_num, len(self.mol_list))
-
-                os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
-                torch.save(
-                    {
-                        "train": torch.tensor(train_idx, dtype=torch.long),
-                        "valid": torch.tensor(valid_idx, dtype=torch.long),
-                        "test": torch.tensor(test_idx, dtype=torch.long),
-                    },
-                    os.path.join(self.root, "split", "split_dict.pt"),
-                )
             return
 
         results = self.process_molecules(self.mol_list)
         final_results = [item for item in results if item is not None]
         for idx, data in enumerate(final_results):
             torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
-
-        total_num = len(self.mol_list)
-        train_num = int(total_num * 0.8)
-        valid_num = int((total_num - train_num) / 2)
-
-        train_idx = range(train_num)
-        valid_idx = range(train_num, train_num + valid_num)
-        test_idx = range(train_num + valid_num, len(self.mol_list))
-
-        os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
-        torch.save(
-            {
-                "train": torch.tensor(train_idx, dtype=torch.long),
-                "valid": torch.tensor(valid_idx, dtype=torch.long),
-                "test": torch.tensor(test_idx, dtype=torch.long),
-            },
-            os.path.join(self.root, "split", "split_dict.pt"),
-        )
 
 
 class EgeognnFinetuneDataset(Dataset):
@@ -316,7 +280,7 @@ class EgeognnFinetuneDataset(Dataset):
         for endpoint in self.endpoints:
             input_file = os.path.join(self.base_path, f"{endpoint}.csv")
             df = pd.read_csv(input_file, nrows=[None, 10][self.dev])
-            df = df.sample(frac=1.0).copy()
+            # df = df.sample(frac=1.0).copy()
 
             _smiles_list = df['smiles'].values
             _label_list = df[endpoint].values
@@ -369,7 +333,9 @@ class EgeognnFinetuneDataset(Dataset):
             assert os.path.exists(self.base_path)
 
     def len(self):
-        return len(self.processed_file_names)
+        path = os.path.join(self.folder, 'processed')
+        files = os.listdir(path)
+        return len(files) - 2
 
     def get(self, idx):
         data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[idx]))
@@ -445,7 +411,7 @@ class EgeognnFinetuneDataset(Dataset):
 
     def process_egeognn_finetune(self):
         if self.useMPI:
-            from  mpi4py import MPI
+            from mpi4py import MPI
             comm = MPI.COMM_WORLD
             rank = comm.Get_rank()
             size = comm.Get_size()
@@ -464,47 +430,12 @@ class EgeognnFinetuneDataset(Dataset):
                 for idx, data in enumerate(final_results):
                     torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
-                total_num = len(final_results)
-                train_num = int(total_num * 0.8)
-                valid_num = int((total_num - train_num) / 2)
-
-                train_idx = range(train_num)
-                valid_idx = range(train_num, train_num + valid_num)
-                test_idx = range(train_num + valid_num, len(self.mol_list))
-
-                os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
-                torch.save(
-                    {
-                        "train": torch.tensor(train_idx, dtype=torch.long),
-                        "valid": torch.tensor(valid_idx, dtype=torch.long),
-                        "test": torch.tensor(test_idx, dtype=torch.long),
-                    },
-                    os.path.join(self.root, "split", "split_dict.pt"),
-                )
-                return
+            return
 
         results = self.process_molecules(self.mol_list)
         final_results = [item for item in results if item is not None]
         for idx, data in enumerate(final_results):
             torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
-
-        total_num = len(final_results)
-        train_num = int(total_num * 0.8)
-        valid_num = int((total_num - train_num) / 2)
-
-        train_idx = range(train_num)
-        valid_idx = range(train_num, train_num + valid_num)
-        test_idx = range(train_num + valid_num, len(self.mol_list))
-
-        os.makedirs(os.path.join(self.root, "split"), exist_ok=True)
-        torch.save(
-            {
-                "train": torch.tensor(train_idx, dtype=torch.long),
-                "valid": torch.tensor(valid_idx, dtype=torch.long),
-                "test": torch.tensor(test_idx, dtype=torch.long),
-            },
-            os.path.join(self.root, "split", "split_dict.pt"),
-        )
 
 
 class CustomData(Data):
@@ -540,15 +471,47 @@ if __name__ == "__main__":
     with open("../config.json") as f:
         configs = json.load(f)
 
-    dataset = EgeognnPretrainedDataset(
-        root='../data/demo',
-        dataset_name='demo',
-        remove_hs=True,
-        with_provided_3d=False,
-        base_path="../data/demo",
+    # dataset = EgeognnPretrainedDataset(
+    #     root='../data/demo',
+    #     dataset_name='demo',
+    #     remove_hs=True,
+    #     with_provided_3d=False,
+    #     base_path="../data/demo",
+    #     atom_names=configs["atom_names"],
+    #     bond_names=configs["bond_names"],
+    #     mask_ratio=0.1
+    # )
+
+    ENDPOINTS = [
+        'Cat_Intravenous_LD50',
+        'Cat_Oral_LD50',
+        'Chicken_Oral_LD50',
+        'Dog_Oral_LD50',
+        'Duck_Oral_LD50',
+        'Guineapig_Oral_LD50',
+        'Mouse_Intramuscular_LD50',
+        'Mouse_Intraperitoneal_LD50',
+        'Mouse_Intravenous_LD50',
+        'Mouse_Oral_LD50',
+        'Mouse_Subcutaneous_LD50',
+        'Rabbit_Intravenous_LD50',
+        'Rabbit_Oral_LD50',
+        'Rat_Inhalation_LC50',
+        'Rat_Intraperitoneal_LD50',
+        'Rat_Intravenous_LD50',
+        'Rat_Oral_LD50',
+        'Rat_Skin_LD50',
+        'Rat_Subcutaneous_LD50'
+    ]
+
+    dataset = EgeognnFinetuneDataset(
+        root='../data/downstream/toxicity',
+        base_path="../data/downstream/toxicity",
         atom_names=configs["atom_names"],
         bond_names=configs["bond_names"],
-        mask_ratio=0.1
+        endpoints=ENDPOINTS,
+        remove_hs=True,
+        dev=True
     )
 
     demo_loader = DataLoader(

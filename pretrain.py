@@ -105,17 +105,17 @@ def evaluate(model, device, loader, args):
         }
 
         if batch.node_feat.shape[0] == 1 or batch.batch[-1] == 0:
-            pass
-        else:
-            with torch.no_grad():
-                loss, loss_dict = model(**input_params)
+            continue
 
-            for k, v in loss_dict.items():
-                loss_accum_dict[k] += v
+        with torch.no_grad():
+            loss, loss_dict = model(**input_params)
 
-            if step % args.log_interval == 0:
-                description = f"Iteration loss: {loss_accum_dict['loss'] / (step + 1):6.4f}"
-                pbar.set_description(description)
+        for k, v in loss_dict.items():
+            loss_accum_dict[k] += v
+
+        if step % args.log_interval == 0:
+            description = f"Iteration loss: {loss_accum_dict['loss'] / (step + 1):6.4f}"
+            pbar.set_description(description)
 
     for k in loss_accum_dict.keys():
         loss_accum_dict[k] /= step + 1
@@ -143,12 +143,25 @@ def main(args):
         mask_ratio=args.mask_ratio,
         atom_names=config["atom_names"],
         bond_names=config["bond_names"],
+        mpi=args.mpi
     )
 
     if args.dataset:
         return None
 
-    split_idx = dataset.get_idx_split()
+    total_num = len(dataset)
+    train_num = int(total_num * 0.8)
+    valid_num = int((total_num - train_num) / 2)
+
+    train_idx = range(train_num)
+    valid_idx = range(train_num, train_num + valid_num)
+    test_idx = range(train_num + valid_num, total_num)
+
+    split_idx = {
+        "train": torch.tensor(train_idx, dtype=torch.long),
+        "valid": torch.tensor(valid_idx, dtype=torch.long),
+        "test": torch.tensor(test_idx, dtype=torch.long),
+    }
 
     train_loader = DataLoader(
         dataset[split_idx["train"]],
@@ -281,7 +294,7 @@ def main(args):
 
         train_pref = loss_dict['loss']
         valid_pref = valid_dict['loss']
-        test_pref = valid_dict['loss']
+        test_pref = test_dict['loss']
         # print(f"Train: {train_pref} Validation: {valid_pref} Test: {test_pref}")
 
         train_curve.append(train_pref)
@@ -297,6 +310,7 @@ def main(args):
 
             checkpoint = {
                 "epoch": epoch,
+                "compound_encoder_state_dict": model_without_ddp.compound_encoder.state_dict(),
                 "model_state_dict": model_without_ddp.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
@@ -364,6 +378,7 @@ def main_cli():
     parser.add_argument("--distributed", action='store_true', default=False)
     parser.add_argument("--local-rank", type=int, default=0)
     parser.add_argument("--enable-tb", action='store_true', default=False)
+    parser.add_argument("--mpi", action='store_true', default=False)
 
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--log-interval", type=int, default=5)
