@@ -11,6 +11,7 @@ from rdkit import Chem
 from rdkit.Chem.rdmolops import RemoveHs
 from sklearn.metrics import pairwise_distances
 from torch import Tensor
+from torch.utils.data import Dataset as TorchDataset
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 from torch_sparse import SparseTensor
@@ -18,8 +19,6 @@ from tqdm import tqdm
 
 from datasets.featurizer import mol_to_egeognn_graph_data, mask_egeognn_graph
 from datasets.utils import MoleculePositionToolKit
-
-from torch.utils.data import Dataset as TorchDataset
 
 
 class EgeognnPretrainedDataset(Dataset):
@@ -456,7 +455,7 @@ class EgeognnInferenceDataset(TorchDataset):
         self.mol_list = []
         self.endpoint_list = []
 
-        self.smiles_list = smiles_list.split(",")
+        self.smiles_list = smiles_list
         self.mol_list = [self.load_smiles(smiles) for smiles in self.smiles_list]
         self.data_list = self.process_egeognn_finetune()
         super().__init__()
@@ -554,7 +553,7 @@ class CustomData(Data):
 
 
 if __name__ == "__main__":
-    with open("../config.json") as f:
+    with open("../configs/config.json") as f:
         configs = json.load(f)
 
     # dataset = EgeognnPretrainedDataset(
@@ -600,13 +599,17 @@ if __name__ == "__main__":
     #     dev=True
     # )
 
-    smiles_list = "C1=CC=C(C=C1)CSCC2=NS(=O)(=O)C3=CC(=C(C=C3N2)Cl)S(=O)(=O)N,CC(=O)OC1=CC=CC=C1C(=O)O," \
-                  "CN1CCC[C@H]1COc1cccc(Cl)c1,C1=CC=C(C(=C1)C(=O)OC2=CC=CC=C2C(=O)O)O,COc1ccc2[nH]cc(C[C@H]3CCCN3C)c2c1"
+    _smiles_list = [
+        "C1=CC=C(C=C1)CSCC2=NS(=O)(=O)C3=CC(=C(C=C3N2)Cl)S(=O)(=O)N",
+        "CC(=O)OC1=CC=CC=C1C(=O)O",
+        "CN1CCC[C@H]1COc1cccc(Cl)c1",
+        "C1=CC=C(C(=C1)C(=O)OC2=CC=CC=C2C(=O)O)O,COc1ccc2[nH]cc(C[C@H]3CCCN3C)c2c1"
+    ]
     dataset = EgeognnInferenceDataset(
         atom_names=configs["atom_names"],
         bond_names=configs["bond_names"],
         remove_hs=True,
-        smiles_list=smiles_list
+        smiles_list=_smiles_list
     )
 
     demo_loader = DataLoader(
