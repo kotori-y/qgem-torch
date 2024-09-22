@@ -12,7 +12,7 @@ export PYTHONUNBUFFERED=1
 # export PYTHONPATH="$(pwd)/$root_path/":$PYTHONPATH
 #export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
-CONFIG_PATH='./config/config.json'
+CONFIG_PATH='./configs/config.json'
 DATASET_ROOT='./data/downstream/toxicity'
 DATASET_BASE_PATH='./data/downstream/toxicity'
 

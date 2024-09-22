@@ -13,7 +13,7 @@ export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
 DATASET_NAME=$2
-CONFIG_PATH='./config/config.json'
+CONFIG_PATH='./configs/config.json'
 DATASET_ROOT="./data/downstream/$DATASET_NAME"
 DATASET_BASE_PATH="./data/downstream/$DATASET_NAME"
 
