@@ -1,22 +1,22 @@
-import io
-import os
-from pathlib import Path
 import argparse
+import io
 import json
+import os
 import random
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import torch
 from torch import nn, optim
-from torch.utils.data import DistributedSampler
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DistributedSampler, random_split
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 from datasets import EgeognnPretrainedDataset
 from utils import init_distributed_mode, WarmCosine
-from torch.optim.lr_scheduler import LambdaLR
 
 
 def train(model, device, loader, optimizer, scheduler, args):
@@ -135,7 +135,6 @@ def main(args):
         config = json.load(f)
 
     dataset = EgeognnPretrainedDataset(
-        root=args.dataset_root,
         dataset_name=args.dataset_name,
         remove_hs=args.remove_hs,
         base_path=args.dataset_base_path,
@@ -143,52 +142,56 @@ def main(args):
         mask_ratio=args.mask_ratio,
         atom_names=config["atom_names"],
         bond_names=config["bond_names"],
-        mpi=args.mpi
+        use_mpi=args.use_mpi,
+        force_generate=args.dataset,
     )
 
     if args.dataset:
         return None
 
-    total_num = len(dataset)
-    train_num = int(total_num * 0.8)
-    valid_num = int((total_num - train_num) / 2)
+    total_size = len(dataset)
+    train_size = int(total_size * 0.8)
+    valid_size = (total_size - train_size) // 2
+    test_size = total_size - train_size - valid_size
 
-    train_idx = range(train_num)
-    valid_idx = range(train_num, train_num + valid_num)
-    test_idx = range(train_num + valid_num, total_num)
+    print(
+        {
+            "train": train_size,
+            "valid": valid_size,
+            "test": test_size
+        }
+    )
 
-    split_idx = {
-        "train": torch.tensor(train_idx, dtype=torch.long),
-        "valid": torch.tensor(valid_idx, dtype=torch.long),
-        "test": torch.tensor(test_idx, dtype=torch.long),
-    }
+    train_dataset, valid_dataset, test_dataset = random_split(dataset, [train_size, valid_size, test_size])
+
+    if args.distributed:
+        sampler_train = DistributedSampler(train_dataset)
+    else:
+        sampler_train = torch.utils.data.RandomSampler(train_dataset)
+
+    batch_sampler_train = torch.utils.data.BatchSampler(
+        sampler_train, args.batch_size, drop_last=True
+    )
 
     train_loader = DataLoader(
-        dataset[split_idx["train"]],
-        batch_size=args.batch_size,
-        shuffle=True,
+        train_dataset,
         num_workers=args.num_workers,
-        drop_last=True,
+        batch_sampler=batch_sampler_train,
     )
 
     valid_loader = DataLoader(
-        dataset[split_idx["valid"]],
-        batch_size=args.batch_size * 2,
-        shuffle=True,
-        num_workers=args.num_workers
-    )
-
-    test_loader = DataLoader(
-        dataset[split_idx["test"]],
+        valid_dataset,
         batch_size=args.batch_size * 2,
         shuffle=False,
         num_workers=args.num_workers
     )
 
-    if args.distributed:
-        sampler_train = DistributedSampler(dataset)
-    else:
-        sampler_train = torch.utils.data.RandomSampler(dataset)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size * 2,
+        shuffle=False,
+        num_workers=args.num_workers
+    )
 
     if args.model_ver == 'gat':
         from models.gat import EGeoGNNModel, EGEM
@@ -226,7 +229,8 @@ def main(args):
     model_without_ddp = model
     args.disable_tqdm = False
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                          find_unused_parameters=True)
         model_without_ddp = model.module
 
         args.checkpoint_dir = "" if args.rank != 0 else args.checkpoint_dir
@@ -345,7 +349,6 @@ def main_cli():
 
     parser.add_argument("--config-path", type=str)
 
-    parser.add_argument("--dataset-root", type=str)
     parser.add_argument("--dataset-base-path", type=str)
     parser.add_argument("--dataset-name", type=str)
 
@@ -378,7 +381,7 @@ def main_cli():
     parser.add_argument("--distributed", action='store_true', default=False)
     parser.add_argument("--local-rank", type=int, default=0)
     parser.add_argument("--enable-tb", action='store_true', default=False)
-    parser.add_argument("--mpi", action='store_true', default=False)
+    parser.add_argument("--use-mpi", action='store_true', default=False)
 
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--log-interval", type=int, default=5)

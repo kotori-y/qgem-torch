@@ -248,7 +248,7 @@ class EgeognnPretrainedDataset(TorchDataset):
 
             final_results = [item for item in results if item is not None]
 
-            self.save_results(final_results, batch_size=8192, rank=rank)
+            self.save_results(final_results, batch_size=81920, rank=rank)
             print(f"NODE {rank} done!")
 
             self.queue[rank] = 1
@@ -271,7 +271,7 @@ class EgeognnPretrainedDataset(TorchDataset):
         results = self.process_molecules(local_molecules)
 
         final_results = [item for item in results if item is not None]
-        self.save_results(final_results, batch_size=8192, rank=0)
+        self.save_results(final_results, batch_size=81920, rank=0)
         print("done")
         return final_results
 
