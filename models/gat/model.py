@@ -13,6 +13,7 @@ from datasets import EgeognnPretrainedDataset
 from datasets.featurizer import get_feature_dims
 from models.conv import MLP
 from models.gat.encoder import EGeoGNNBlock
+from models.gin.encoder import BondAngleFloatRBF, DihedralAngleFloatRBF
 
 _REDUCER_NAMES = {
     "sum": global_add_pool,
@@ -26,7 +27,8 @@ class EGeoGNNModel(nn.Module):
             self, latent_size: int, hidden_size: int, n_layers: int,
             use_layer_norm: bool, layernorm_before: bool, use_bn: bool,
             dropnode_rate: float, encoder_dropout: float, num_message_passing_steps: int,
-            atom_names: List[str], bond_names: List[str], global_reducer: str
+            atom_names: List[str], bond_names: List[str], global_reducer: str,
+            device
     ):
         super().__init__()
 
@@ -59,8 +61,10 @@ class EGeoGNNModel(nn.Module):
 
         self.pos_embedding = MLP(3, [latent_size, latent_size])
         self.dis_embedding = MLP(1, [latent_size, latent_size])
-        self.angle_embedding = MLP(1, [latent_size, latent_size])
-        self.dihedral_embedding = MLP(1, [latent_size, latent_size])
+        self.angle_embedding = BondAngleFloatRBF(latent_size, device=device)
+        self.dihedral_embedding = DihedralAngleFloatRBF(latent_size, device=device)
+
+        self.encoder_dropout = encoder_dropout
 
     def one_hot_atoms(self, atoms, masked_atom_indices=None):
         _atoms = copy.deepcopy(atoms)
@@ -105,9 +109,9 @@ class EGeoGNNModel(nn.Module):
         _dihedral_angles = copy.deepcopy(dihedral_angles).to(dihedral_angles.device)
 
         if masked_angle_indices is not None:
-            _bond_angles[masked_angle_indices] = 0
+            _bond_angles[masked_angle_indices] = 1e-5
         if masked_dihedral_indices is not None:
-            _dihedral_angles[masked_dihedral_indices] = 0
+            _dihedral_angles[masked_dihedral_indices] = 1e-5
 
         graph_idx = torch.arange(num_graphs).to(x.device)
         bond_batch = torch.repeat_interleave(graph_idx, num_bonds, dim=0)
@@ -128,7 +132,7 @@ class EGeoGNNModel(nn.Module):
         )
 
         for i, layer in enumerate(self.layers):
-            atom_attr, bond_attr, angle_attr, u = layer(
+            atom_attr_1, bond_attr_1, angle_attr_1, u_1 = layer(
                 AtomBondGraph_edges=AtomBondGraph_edges,
                 BondAngleGraph_edges=BondAngleGraph_edges,
                 AngleDihedralGraph_edges=AngleDihedralGraph_edges,
@@ -144,6 +148,11 @@ class EGeoGNNModel(nn.Module):
                 bond_batch=bond_batch,
                 angle_batch=angle_batch
             )
+            atom_attr = F.dropout(atom_attr_1, p=self.encoder_dropout, training=self.training) + atom_attr
+            bond_attr = F.dropout(bond_attr_1, p=self.encoder_dropout, training=self.training) + bond_attr
+            angle_attr = F.dropout(angle_attr_1, p=self.encoder_dropout, training=self.training) + angle_attr
+            # dihedral_attr = F.dropout(dihedral_attr_1, p=self.dropout, training=self.training) + dihedral_attr
+            u = F.dropout(u_1, p=self.encoder_dropout, training=self.training) + u
 
         return atom_attr, bond_attr, angle_attr, dihedral_attr, u
 
@@ -162,7 +171,7 @@ class EGEM(nn.Module):
         # bond length with regression
         if 'Blr' in pretrain_tasks:
             self.Blr_mlp = MLP(
-                input_size=compound_encoder.latent_size,
+                input_size=compound_encoder.latent_size * 2,
                 output_sizes=[hidden_size] * n_layers + [1],
                 use_layer_norm=use_layer_norm,
                 use_bn=use_bn,
@@ -174,7 +183,7 @@ class EGEM(nn.Module):
         # bond angle with regression
         if 'Bar' in pretrain_tasks:
             self.Bar_mlp = MLP(
-                input_size=compound_encoder.latent_size,
+                input_size=compound_encoder.latent_size * 3,
                 output_sizes=[hidden_size] * n_layers + [1],
                 use_layer_norm=use_layer_norm,
                 use_bn=use_bn,
@@ -186,7 +195,7 @@ class EGEM(nn.Module):
         # dihedral angle with regression
         if 'Dar' in pretrain_tasks:
             self.Dar_mlp = MLP(
-                input_size=compound_encoder.latent_size,
+                input_size=compound_encoder.latent_size * 4,
                 output_sizes=[hidden_size] * n_layers + [1],
                 use_layer_norm=use_layer_norm,
                 use_bn=use_bn,
@@ -207,63 +216,102 @@ class EGEM(nn.Module):
             )
             self.Adc_loss = nn.CrossEntropyLoss()
 
-    def _get_Blr_loss(self, bond_attr, bond_lengths, masked_bond_indices=None):
-        pred = self.Blr_mlp(bond_attr)
-        loss = self.Blr_loss(pred, bond_lengths.unsqueeze(-1))
+    def _get_Blr_loss(self, atom_attr, bond_lengths, AtomBondGraph_edges, masked_bond_indices=None):
+        masked_atom_i, masked_atom_j = AtomBondGraph_edges.index_select(1, masked_bond_indices)
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        atom_attr_j = atom_attr.index_select(0, masked_atom_j)
+        atom_attr_ij = torch.cat((atom_attr_i, atom_attr_j), dim=1)
 
-        if masked_bond_indices is not None:
-            bond_lengths = bond_lengths[masked_bond_indices]
-            bond_attr = bond_attr[masked_bond_indices]
+        pred = self.Blr_mlp(atom_attr_ij)
+        return self.Blr_loss(
+            pred,
+            bond_lengths[masked_bond_indices].unsqueeze(-1)
+        )
 
-        pred = self.Blr_mlp(bond_attr)
-        loss += self.Blr_loss(pred, bond_lengths.unsqueeze(-1))
-        return loss
+    def _get_Bar_loss(
+            self, atom_attr, bond_angles,
+            AtomBondGraph_edges, BondAngleGraph_edges,
+            masked_angle_indices=None
+    ):
+        masked_bond_i, masked_bond_j = BondAngleGraph_edges.index_select(1, masked_angle_indices)
 
-    def _get_Bar_loss(self, angle_attr, bond_angles, masked_angle_indices=None):
-        pred = self.Bar_mlp(angle_attr)
-        loss = self.Bar_loss(pred, bond_angles.unsqueeze(-1))
+        masked_atom_i, masked_atom_j = AtomBondGraph_edges.index_select(1, masked_bond_i)
+        _, masked_atom_k = AtomBondGraph_edges.index_select(1, masked_bond_j)
 
-        if masked_angle_indices is not None:
-            bond_angles = bond_angles[masked_angle_indices]
-            angle_attr = angle_attr[masked_angle_indices]
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        atom_attr_j = atom_attr.index_select(0, masked_atom_j)
+        atom_attr_k = atom_attr.index_select(0, masked_atom_k)
+        atom_attr_ijk = torch.cat((atom_attr_i, atom_attr_j, atom_attr_k), dim=1)
 
-        pred = self.Bar_mlp(angle_attr)
-        loss += self.Bar_loss(pred, bond_angles.unsqueeze(-1))
-        return loss
+        pred = self.Bar_mlp(atom_attr_ijk)
+        return self.Bar_loss(
+            pred,
+            bond_angles[masked_angle_indices].unsqueeze(-1)
+        )
 
-    def _get_Dar_loss(self, dihedral_attr, dihedral_angles, masked_dihedral_indices=None):
-        pred = self.Dar_mlp(dihedral_attr)
-        loss = self.Dar_loss(pred, dihedral_angles.unsqueeze(-1))
+    def _get_Dar_loss(
+            self, atom_attr, dihedral_angles,
+            AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
+            masked_dihedral_indices=None
+    ):
+        masked_angle_i, masked_angle_j = AngleDihedralGraph_edges.index_select(1, masked_dihedral_indices)
 
-        if masked_dihedral_indices is not None:
-            dihedral_angles = dihedral_angles[masked_dihedral_indices]
-            dihedral_attr = dihedral_attr[masked_dihedral_indices]
+        masked_bond_i, _ = BondAngleGraph_edges.index_select(1, masked_angle_i)
+        _, masked_bond_k = BondAngleGraph_edges.index_select(1, masked_angle_j)
 
-        pred = self.Dar_mlp(dihedral_attr)
-        loss += self.Dar_loss(pred, dihedral_angles.unsqueeze(-1))
-        return loss
+        masked_atom_i, masked_atom_j = AtomBondGraph_edges.index_select(1, masked_bond_i)
+        masked_atom_k, masked_atom_l = AtomBondGraph_edges.index_select(1, masked_bond_k)
+
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        atom_attr_j = atom_attr.index_select(0, masked_atom_j)
+        atom_attr_k = atom_attr.index_select(0, masked_atom_k)
+        atom_attr_l = atom_attr.index_select(0, masked_atom_l)
+        atom_attr_ijkl = torch.cat((atom_attr_i, atom_attr_j, atom_attr_k, atom_attr_l), dim=1)
+
+        pred = self.Dar_mlp(atom_attr_ijkl)
+        return self.Dar_loss(
+            pred,
+            dihedral_angles[masked_dihedral_indices].unsqueeze(-1)
+        )
 
     def compute_loss(
-            self, bond_attr, angle_attr, dihedral_attr,
-            bond_lengths, bond_angles, dihedral_angles,
-            masked_bond_indices=None, masked_angle_indices=None,
-            masked_dihedral_indices=None
+            self, bond_lengths, bond_angles, dihedral_angles,
+            AtomBondGraph_edges, atom_attr, BondAngleGraph_edges, AngleDihedralGraph_edges,
+            masked_bond_indices=None, masked_angle_indices=None, masked_dihedral_indices=None
     ):
         loss = 0
         loss_dict = {}
 
         if "Blr" in self.pretrain_tasks:
-            bond_length_loss = self._get_Blr_loss(bond_attr, bond_lengths, masked_bond_indices)
+            bond_length_loss = self._get_Blr_loss(
+                atom_attr=atom_attr,
+                bond_lengths=bond_lengths,
+                AtomBondGraph_edges=AtomBondGraph_edges,
+                masked_bond_indices=masked_bond_indices
+            )
             loss += bond_length_loss
             loss_dict["bond_length_loss"] = bond_length_loss.detach().item()
 
         if "Bar" in self.pretrain_tasks:
-            bond_angle_loss = self._get_Bar_loss(angle_attr, bond_angles, masked_angle_indices)
+            bond_angle_loss = self._get_Bar_loss(
+                atom_attr=atom_attr,
+                bond_angles=bond_angles,
+                AtomBondGraph_edges=AtomBondGraph_edges,
+                BondAngleGraph_edges=BondAngleGraph_edges,
+                masked_angle_indices=masked_angle_indices
+            )
             loss += bond_angle_loss
             loss_dict["bond_angle_loss"] = bond_angle_loss.detach().item()
 
         if "Dar" in self.pretrain_tasks:
-            dihedral_angle_loss = self._get_Dar_loss(dihedral_attr, dihedral_angles, masked_dihedral_indices)
+            dihedral_angle_loss = self._get_Dar_loss(
+                atom_attr=atom_attr,
+                dihedral_angles=dihedral_angles,
+                AtomBondGraph_edges=AtomBondGraph_edges,
+                BondAngleGraph_edges=BondAngleGraph_edges,
+                AngleDihedralGraph_edges=AngleDihedralGraph_edges,
+                masked_dihedral_indices = masked_dihedral_indices
+            )
             loss += dihedral_angle_loss
             loss_dict["dihedral_angle_loss"] = dihedral_angle_loss.detach().item()
 
@@ -289,11 +337,16 @@ class EGEM(nn.Module):
         )
 
         return self.compute_loss(
-            bond_attr=bond_attr, angle_attr=angle_attr, dihedral_attr=dihedral_attr,
-            bond_lengths=bond_lengths, bond_angles=bond_angles, dihedral_angles=dihedral_angles,
+            atom_attr=atom_attr,
+            bond_lengths=bond_lengths,
+            bond_angles=bond_angles,
+            dihedral_angles=dihedral_angles,
+            AtomBondGraph_edges=AtomBondGraph_edges,
+            BondAngleGraph_edges=BondAngleGraph_edges,
+            AngleDihedralGraph_edges=AngleDihedralGraph_edges,
             masked_bond_indices=masked_bond_indices,
             masked_angle_indices=masked_angle_indices,
-            masked_dihedral_indices=masked_dihedral_indices
+            masked_dihedral_indices=masked_dihedral_indices,
         )
         # self.compute_loss(bond_attr, masked_bond_indices=masked_bond_indices)
 

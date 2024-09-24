@@ -125,7 +125,6 @@ class EGeoGNNBlock(nn.Module):
                 atom_attr, bond_attr, angle_attr, dihedral_attr, u,
                 num_atoms, num_bonds, num_angles,
                 atom_batch, bond_batch, angle_batch):
-
         atom_attr = self.atom_encoder(
             edges=AtomBondGraph_edges,
             node_feat=atom_attr,

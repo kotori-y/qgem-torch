@@ -53,9 +53,9 @@ class AtomBondEmbedding(nn.Module):
 
 
 class RBF(nn.Module):
-    def __init__(self, centers, gamma):
+    def __init__(self, centers, gamma, device):
         super(RBF, self).__init__()
-        self.centers = torch.reshape(torch.tensor(centers, dtype=torch.float32), [1, -1])
+        self.centers = torch.tensor(centers, dtype=torch.float32).reshape(1, -1).to(device)
         self.gamma = gamma
 
     def forward(self, x):
@@ -64,13 +64,13 @@ class RBF(nn.Module):
 
 
 class BondFloatRBF(nn.Module):
-    def __init__(self, latent_size):
+    def __init__(self, latent_size, device):
         super(BondFloatRBF, self).__init__()
 
         centers = np.arange(0, 2, 0.1)
         gamma = 10.0
 
-        self.rbf = RBF(centers, gamma)
+        self.rbf = RBF(centers, gamma, device)
         self.linear = nn.Linear(len(centers), latent_size)
 
     def forward(self, bond_lengths):
@@ -80,13 +80,13 @@ class BondFloatRBF(nn.Module):
 
 
 class BondAngleFloatRBF(nn.Module):
-    def __init__(self, latent_size):
+    def __init__(self, latent_size, device):
         super(BondAngleFloatRBF, self).__init__()
 
         centers = np.arange(0, np.pi, 0.01)
         gamma = 10.0
 
-        self.rbf = RBF(centers, gamma)
+        self.rbf = RBF(centers, gamma, device)
         self.linear = nn.Linear(len(centers), latent_size)
 
     def forward(self, bond_angles):
@@ -96,13 +96,13 @@ class BondAngleFloatRBF(nn.Module):
 
 
 class DihedralAngleFloatRBF(nn.Module):
-    def __init__(self, latent_size):
+    def __init__(self, latent_size, device):
         super(DihedralAngleFloatRBF, self).__init__()
 
         centers = np.arange(-np.pi, np.pi, 0.01)
         gamma = 10
 
-        self.rbf = RBF(centers, gamma)
+        self.rbf = RBF(centers, gamma, device)
         self.linear = nn.Linear(len(centers), latent_size)
 
     def forward(self, dihedral_angles):

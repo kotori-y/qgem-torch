@@ -210,7 +210,8 @@ def main(args):
         "num_message_passing_steps": args.num_message_passing_steps,
         "atom_names": config["atom_names"],
         "bond_names": config["bond_names"],
-        "global_reducer": 'sum'
+        "global_reducer": 'sum',
+        "device": device
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
 
