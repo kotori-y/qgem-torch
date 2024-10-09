@@ -8,9 +8,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_squared_error
 from torch import optim
-from torch.utils.data import DistributedSampler
+from torch.utils.data import DistributedSampler, random_split
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
@@ -21,7 +21,7 @@ from utils import exempt_parameters, init_distributed_mode
 
 
 def train(
-        model, device, loader,
+        model: DownstreamModel, device, loader,
         encoder_opt, head_opt,
         args
 ):
@@ -74,12 +74,14 @@ def train(
             loss, loss_dict = model.compute_loss(pred_scaled, label_scaled)
 
         loss.backward()
+
         if encoder_opt is not None:
             encoder_opt.step()
         head_opt.step()
 
         label = label_scaled * label_std + label_mean
         pred = pred_scaled * label_std + label_mean
+
         for i, endpoint in enumerate(batch.endpoint):
             if endpoint not in prediction_logs:
                 prediction_logs[endpoint] = {'y_true': [], 'y_pred': []}
@@ -99,12 +101,14 @@ def train(
 
     for endpoint, results in prediction_logs.items():
         loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
+        # loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
 
     return loss_accum_dict
 
 
-def evaluate(model, device, loader, args):
+def evaluate(model: DownstreamModel, device, loader, args):
     model.eval()
+    model.compound_encoder.eval()
 
     loss_accum_dict = defaultdict(float)
     counter = {}
@@ -138,18 +142,19 @@ def evaluate(model, device, loader, args):
         with torch.no_grad():
             pred_scaled = model(**input_params)
 
-        label_scaled, label_mean, label_std = batch.label.reshape(-1, 3).T
-        label_scaled = label_scaled.to(device)
-        label_mean = label_mean.to(device)
-        label_std = label_std.to(device)
+            label_scaled, label_mean, label_std = batch.label.reshape(-1, 3).T
+            label_scaled = label_scaled.to(device)
+            label_mean = label_mean.to(device)
+            label_std = label_std.to(device)
 
-        if args.distributed:
-            loss, loss_dict = model.module.compute_loss(pred_scaled, label_scaled)
-        else:
-            loss, loss_dict = model.compute_loss(pred_scaled, label_scaled)
+            if args.distributed:
+                loss, loss_dict = model.module.compute_loss(pred_scaled, label_scaled)
+            else:
+                loss, loss_dict = model.compute_loss(pred_scaled, label_scaled)
 
         label = (label_scaled * label_std) + label_mean
         pred = (pred_scaled * label_std) + label_mean
+
         for i, endpoint in enumerate(batch.endpoint):
             if endpoint not in prediction_logs:
                 prediction_logs[endpoint] = {'y_true': [], 'y_pred': []}
@@ -165,10 +170,12 @@ def evaluate(model, device, loader, args):
             pbar.set_description(description)
 
     for k in loss_accum_dict.keys():
+
         loss_accum_dict[k] /= counter[k]
 
     for endpoint, results in prediction_logs.items():
         loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
+        loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
 
     return loss_accum_dict
 
@@ -193,59 +200,69 @@ def main(args):
         config = json.load(f)
 
     dataset = EgeognnFinetuneDataset(
-        root=args.dataset_root,
         remove_hs=args.remove_hs,
         base_path=args.dataset_base_path,
         atom_names=config["atom_names"],
         bond_names=config["bond_names"],
         dev=args.dev,
         endpoints=args.endpoints,
-        useMPI=args.useMPI
+        use_mpi=args.use_mpi,
+        force_generate=args.dataset,
+        preprocess_endpoints=args.preprocess_endpoints
     )
 
     if args.dataset:
         return None
 
-    total_num = len(dataset)
-    train_num = int(total_num * 0.8)
-    # valid_num = total_num - train_num
+    args.endpoints = [
+        endpoint
+        if endpoint not in args.preprocess_endpoints else f"log10_{endpoint}"
+        for endpoint in args.endpoints
+    ]
 
-    train_idx = list(random.sample(range(total_num), train_num))
-    valid_idx = list(set(range(total_num)) - set(train_idx))
-    # test_idx = range(train_num + valid_num, total_num)
+    total_size = len(dataset)
+    train_size = int(total_size * 0.8)
+    # valid_size = (total_size - train_size) // 2
+    test_size = total_size - train_size
 
-    split_idx = {
-        "train": torch.tensor(train_idx, dtype=torch.long),
-        "valid": torch.tensor(valid_idx, dtype=torch.long)
-        # "test": torch.tensor(test_idx, dtype=torch.long),
-    }
+    print(
+        {
+            "train": train_size,
+            # "valid": valid_size,
+            "test": test_size
+        }
+    )
+
+    train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+
+    if args.distributed:
+        sampler_train = DistributedSampler(train_dataset)
+    else:
+        sampler_train = torch.utils.data.RandomSampler(train_dataset)
+
+    batch_sampler_train = torch.utils.data.BatchSampler(
+        sampler_train, args.batch_size, drop_last=True
+    )
 
     train_loader = DataLoader(
-        dataset[split_idx["train"]],
-        batch_size=args.batch_size,
-        shuffle=True,
+        train_dataset,
         num_workers=args.num_workers,
-        drop_last=True,
+        batch_sampler=batch_sampler_train,
     )
 
-    valid_loader = DataLoader(
-        dataset[split_idx["valid"]],
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers
-    )
-
-    # test_loader = DataLoader(
-    #     dataset[split_idx["test"]],
-    #     batch_size=args.batch_size,
+    # valid_loader = DataLoader(
+    #     valid_dataset,
+    #     batch_size=args.batch_size * 2,
     #     shuffle=False,
     #     num_workers=args.num_workers
     # )
 
-    if args.distributed:
-        sampler_train = DistributedSampler(dataset)
-    else:
-        sampler_train = torch.utils.data.RandomSampler(dataset)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size * 2,
+        shuffle=False,
+        num_workers=args.num_workers
+    )
 
     if args.model_ver == 'gat':
         from models.gat import EGeoGNNModel
@@ -265,6 +282,7 @@ def main(args):
         "atom_names": config["atom_names"],
         "bond_names": config["bond_names"],
         "global_reducer": 'sum',
+        "device": device
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
 
@@ -272,6 +290,7 @@ def main(args):
         assert os.path.exists(args.encoder_eval_from)
         checkpoint = torch.load(args.encoder_eval_from, map_location=device)["compound_encoder_state_dict"]
         compound_encoder.load_state_dict(checkpoint)
+        print(f"load params from {args.encoder_eval_from}")
 
     model_params = {
         "compound_encoder": compound_encoder,
@@ -345,8 +364,8 @@ def main(args):
     #     scheduler = LambdaLR(optimizer, lambda x: lrscheduler.step(x))
 
     train_curve = []
-    valid_curve = []
-    # test_curve = []
+    # valid_curve = []
+    test_curve = []
 
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
@@ -365,22 +384,22 @@ def main(args):
         )
 
         print("Evaluating...")
-        valid_dict = evaluate(model, device, valid_loader, args)
-        # test_dict = evaluate(model, device, test_loader, args)
+        # valid_dict = evaluate(model, device, valid_loader, args)
+        test_dict = evaluate(model, device, test_loader, args)
 
         if args.checkpoint_dir:
             print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
 
         train_pref = train_dict['loss']
-        valid_pref = valid_dict['loss']
-        # test_pref = test_dict['loss']
+        # valid_pref = valid_dict['loss']
+        test_pref = test_dict['loss']
 
         train_curve.append(train_pref)
-        valid_curve.append(valid_pref)
-        # test_curve.append(test_pref)
+        # valid_curve.append(valid_pref)
+        test_curve.append(test_pref)
 
         if args.checkpoint_dir:
-            logs = {"epoch": epoch, "Train": train_dict, "Valid": valid_dict}
+            logs = {"epoch": epoch, "Train": train_dict, "Test": test_dict}
             with io.open(
                     os.path.join(args.checkpoint_dir, "log.txt"), "a", encoding="utf8", newline="\n"
             ) as tgt:
@@ -398,11 +417,15 @@ def main(args):
             torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
             if args.enable_tb:
                 tb_writer = SummaryWriter(args.checkpoint_dir)
-                tb_writer.add_scalar("evaluation/train", train_pref, epoch)
-                tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
-                # tb_writer.add_scalar("evaluation/test", test_pref, epoch)
-                for k, v in train_dict.items():
-                    tb_writer.add_scalar(f"training/{k}", v, epoch)
+                tb_writer.add_scalar("loss/train", train_pref, epoch)
+                tb_writer.add_scalar("loss/test", test_pref, epoch)
+
+                for k, v in test_dict.items():
+                    if "r2" in k:
+                        tb_writer.add_scalar(f"r2_score/{k}", v, epoch)
+                        continue
+                    if "mse" in k:
+                        tb_writer.add_scalar(f"mse/{k}", v, epoch)
 
 
 def main_cli():
@@ -414,8 +437,6 @@ def main_cli():
     parser.add_argument("--task-type", type=str)
 
     parser.add_argument("--config-path", type=str)
-
-    parser.add_argument("--dataset-root", type=str)
     parser.add_argument("--dataset-base-path", type=str)
 
     parser.add_argument("--remove-hs", action='store_true', default=False)
@@ -445,8 +466,10 @@ def main_cli():
     parser.add_argument("--lr-warmup", action='store_true', default=False)
 
     parser.add_argument("--distributed", action='store_true', default=False)
-    parser.add_argument("--useMPI", action='store_true', default=False)
+    parser.add_argument("--use_mpi", action='store_true', default=False)
+
     parser.add_argument("--endpoints", type=str, nargs="+")
+    parser.add_argument("--preprocess-endpoints", type=str, nargs="+")
 
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--log-interval", type=int, default=5)

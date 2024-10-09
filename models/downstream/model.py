@@ -44,6 +44,8 @@ class DownstreamModel(nn.Module):
 
         self.inference = inference
 
+        self.loss_func = nn.MSELoss()
+
     def forward(
             self,
             AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
@@ -99,7 +101,7 @@ class DownstreamModel(nn.Module):
     def compute_loss(self, pred, target):
         loss_dict = {}
 
-        loss = torch.mean(F.l1_loss(pred, target))
+        loss = self.loss_func(pred, target)
         loss_dict['loss'] = loss.detach().item()
 
         return loss, loss_dict

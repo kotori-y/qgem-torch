@@ -276,26 +276,25 @@ class EgeognnPretrainedDataset(TorchDataset):
         return final_results
 
 
-class EgeognnFinetuneDataset(Dataset):
+class EgeognnFinetuneDataset(TorchDataset):
     def __init__(
-            self,
-            root,
-            base_path,
-            atom_names,
-            bond_names,
-            endpoints,
-            remove_hs=False,
-            transform=None,
-            pre_transform=None,
-            dev=False,
-            useMPI=False
+            self, base_path, endpoints,
+            atom_names, bond_names,
+            remove_hs=False, dev=False,
+            use_mpi=False, force_generate=False,
+            preprocess_endpoints=None
     ):
+        if preprocess_endpoints is None:
+            preprocess_endpoints = []
+
+        self.loaded_batches = []
+
         assert dev in [True, False]
 
         if remove_hs:
-            self.folder = os.path.join(root, f"egeognn_downstream_finetune_rh")
+            self.folder = os.path.join(base_path, f"egeognn_downstream_finetune_rh")
         else:
-            self.folder = os.path.join(root, f"egeognn_downstream_finetune")
+            self.folder = os.path.join(base_path, f"egeognn_downstream_finetune")
 
         self.remove_hs = remove_hs
         self.base_path = base_path
@@ -305,17 +304,33 @@ class EgeognnFinetuneDataset(Dataset):
 
         self.dev = dev
         self.endpoints = endpoints
-        self.useMPI = useMPI
+        self.use_mpi = use_mpi
 
         self.mol_list = []
         self.label_list = []
         self.endpoint_list = []
 
-        curr_index = 0
+        if not os.path.exists(self.processed_dir):
+            os.makedirs(self.processed_dir, exist_ok=True)
 
+        processed_files = os.listdir(self.processed_dir)
+        if (not force_generate) and processed_files and processed_files[0].endswith(".pt"):
+            print(f'Loading data from {self.processed_dir}')
+            for file in tqdm(processed_files):
+                batch_file_path = os.path.join(self.processed_dir, file)
+                loaded_data = torch.load(batch_file_path)
+                self.loaded_batches.extend(loaded_data)
+            return
+
+        curr_index = 0
         for endpoint in self.endpoints:
             input_file = os.path.join(self.base_path, f"{endpoint}.csv")
             df = pd.read_csv(input_file, nrows=[None, 10][self.dev])
+
+            if endpoint in preprocess_endpoints:
+                df = df[df[endpoint] != 0].copy()
+                df[f"log10_{endpoint}"] = np.log10(df[endpoint].values)
+                endpoint = f"log10_{endpoint}"
             # df = df.sample(frac=1.0).copy()
 
             _smiles_list = df['smiles'].values
@@ -351,49 +366,49 @@ class EgeognnFinetuneDataset(Dataset):
                     continue
 
         self.label_list = np.array(self.label_list)
-        super().__init__(self.folder, transform, pre_transform)
 
-    @property
-    def raw_file_names(self):
-        # no error, since download function will not download anything
-        return "graph.smi.gz"
+        # for fucking bug of nscc-tj
+        self.queue = None
+        if self.use_mpi:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            size = comm.Get_size()
+            self.queue = np.zeros(size)
+        self.loaded_batches = self.process()
 
-    @property
-    def processed_file_names(self):
-        return [f"egeognn_downstream_processed_{i}.pt" for i in range(len(self.mol_list))]
+        super().__init__()
 
-    def download(self):
-        if os.path.exists(self.processed_paths[0]):
-            return
-        else:
-            assert os.path.exists(self.base_path)
+    def __len__(self):
+        return len(self.loaded_batches)
 
-    def len(self):
-        path = os.path.join(self.folder, 'processed')
-        files = os.listdir(path)
-        return len(files) - 2
-
-    def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[idx]))
-        return data
+    def __getitem__(self, item):
+        return self.loaded_batches[item]
 
     def process(self):
         print("Converting pickle files into graphs...")
-        self.process_egeognn_finetune()
+        return self.process_egeognn_finetune()
 
-    def get_idx_split(self):
-        path = os.path.join(self.root, "split")
-        if os.path.isfile(os.path.join(path, "split_dict.pt")):
-            return torch.load(os.path.join(path, "split_dict.pt"))
+    @property
+    def processed_dir(self):
+        return os.path.join(self.folder, 'processed')
 
-    def mol_to_egeognn_graph_data_raw3d(self, mol):
-        atom_poses = MoleculePositionToolKit.get_atom_poses(mol)
-        return mol_to_egeognn_graph_data(
-            mol=mol,
-            atom_names=self.atom_names,
-            bond_names=self.bond_names,
-            atom_poses=atom_poses
-        )
+    def save_results(self, final_results, batch_size, rank):
+        if len(final_results) == 0:
+            return
+
+        batch_data = []
+        print('saving results...')
+
+        for idx, data in enumerate(final_results):
+            batch_data.append(data)
+            if len(batch_data) >= batch_size:
+                batch_file_path = os.path.join(self.processed_dir, f'batch_{idx // batch_size}_{rank}.pt')
+                torch.save(batch_data, batch_file_path)
+                batch_data = []
+
+        if batch_data:
+            batch_file_path = os.path.join(self.processed_dir, f'batch_{len(final_results) // batch_size}_{rank}.pt')
+            torch.save(batch_data, batch_file_path)
 
     def mol_to_egeognn_graph_data_MMFF3d(self, mol, numConfs=3):
         if len(mol.GetAtoms()) <= 400:
@@ -439,14 +454,19 @@ class EgeognnFinetuneDataset(Dataset):
             return None
 
     def process_molecules(self, molecules):
-        results = []
-        with ThreadPoolExecutor() as executor:
-            for result in tqdm(executor.map(self.process_molecule, molecules), total=len(molecules)):
-                results.append(result)
-        return results
+        try:
+            results = []
+            with ThreadPoolExecutor() as executor:
+                for result in tqdm(executor.map(self.process_molecule, molecules), total=len(molecules)):
+                    if result is None:
+                        print(f"Failed to process a molecule.")
+                    results.append(result)
+            return results
+        except:
+            return []
 
     def process_egeognn_finetune(self):
-        if self.useMPI:
+        if self.use_mpi:
             from mpi4py import MPI
             comm = MPI.COMM_WORLD
             rank = comm.Get_rank()
@@ -458,20 +478,37 @@ class EgeognnFinetuneDataset(Dataset):
             end_index = (rank + 1) * chunk_size if rank != size - 1 else len(self.mol_list)
 
             local_molecules = self.mol_list[start_index:end_index]
+            local_molecules = [mol for mol in local_molecules if mol is not None]
             results = self.process_molecules(local_molecules)
-            all_results = comm.gather(results, root=0)
+            # all_results = comm.gather(results, root=0)
 
-            if rank == 0:
-                final_results = [item for sublist in all_results for item in sublist if item is not None]
-                for idx, data in enumerate(final_results):
-                    torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
+            final_results = [item for item in results if item is not None]
 
-            return
+            self.save_results(final_results, batch_size=81920, rank=rank)
+            print(f"NODE {rank} done!")
 
-        results = self.process_molecules(self.mol_list)
+            self.queue[rank] = 1
+            for node in range(size):
+                if node != rank:
+                    comm.isend(rank, dest=node, tag=11)
+
+            print(f"NODE {rank}: waiting for other node...")
+            while self.queue.sum() != size:
+                for node in range(size):
+                    if node != rank:
+                        tgt = comm.recv(source=node, tag=11)
+                        self.queue[tgt] = 1
+                continue
+
+            return []
+
+        local_molecules = [mol for mol in self.mol_list if mol is not None]
+        results = self.process_molecules(local_molecules)
         final_results = [item for item in results if item is not None]
-        for idx, data in enumerate(final_results):
-            torch.save(data, os.path.join(self.processed_dir, self.processed_file_names[idx]))
+
+        self.save_results(final_results, batch_size=81920, rank=0)
+        print("done")
+        return final_results
 
 
 class EgeognnInferenceDataset(TorchDataset):
