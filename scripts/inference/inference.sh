@@ -15,26 +15,25 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 CONFIG_PATH='./configs/config.json'
 STATUS_PATH='./configs/endpoint_statuses.json'
 
-LATENT_SIZE=128
-ENCODER_HIDDEN_SIZE=512
-NUM_ENCODER_LAYERS=2
+LATENT_SIZE=32
+NUM_ENCODER_LAYERS=8
 DROPNODE_RATE=0.1
 ENCODER_DROPOUT=0.1
-NUM_MESSAGE_PASSING_STEPS=2
 
-HIDDEN_SIZE=512
+HIDDEN_SIZE_TOX=128
+HIDDEN_SIZE_PC=512
 NUM_LAYERS=3
 DROPOUT_RATE=0.2
 
-BATCH_SIZE=16
+BATCH_SIZE=128
 NUM_WORKERS=6
 
-DEVICE='cpu'
+DEVICE='cuda'
 
 SMILES_LIST=$1
 
-TOXICITY_EVAL_FROM='./outs/checkpoints/downstream/toxicity/gat-3-0.2-1e-4-1e-2-frozen-beta/checkpoint_23.pt'
-PHYSCHEM_EVAL_FROM='./outs/checkpoints/downstream/physchem-sample/gat-3-0.2-1e-4-1e-2-frozen-beta/checkpoint_87.pt'
+TOXICITY_EVAL_FROM='./outs/checkpoints/downstream/toxicity-wash-3/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_99.pt'
+PHYSCHEM_EVAL_FROM='./outs/checkpoints/downstream/physchem-wash-2/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_22.pt'
 
 
 python inference.py \
@@ -42,12 +41,11 @@ python inference.py \
   --config-path $CONFIG_PATH \
   --status-path $STATUS_PATH \
   --latent-size $LATENT_SIZE \
-  --encoder-hidden-size $ENCODER_HIDDEN_SIZE \
   --num-encoder-layers $NUM_ENCODER_LAYERS \
   --dropnode-rate $DROPNODE_RATE \
   --encoder-dropout $ENCODER_DROPOUT \
-  --num-message-passing-steps $NUM_MESSAGE_PASSING_STEPS \
-  --hidden-size $HIDDEN_SIZE \
+  --hidden-size-pc $HIDDEN_SIZE_PC \
+  --hidden-size-tox $HIDDEN_SIZE_TOX \
   --num-layers $NUM_LAYERS \
   --dropout-rate $DROPOUT_RATE \
   --batch-size $BATCH_SIZE \

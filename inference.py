@@ -4,19 +4,22 @@ import os
 
 import numpy as np
 import torch
-from sklearn.metrics import r2_score
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 from datasets import EgeognnInferenceDataset
 from models.downstream import DownstreamModel
-from models.gat import EGeoGNNModel
+from models.gin import EGeoGNNModel
 from models.inference import InferenceModel
-from utils import init_distributed_mode
 
 
-def inference(model: InferenceModel, device, loader, endpoints, args):
+def inference(model: InferenceModel, device, loader, endpoints, masked_endpoints=None, processed_endpoints=None):
     model.eval()
+
+    if masked_endpoints is None:
+        masked_endpoints = []
+    if processed_endpoints is None:
+        processed_endpoints = []
 
     prediction = []
     smiles = []
@@ -47,7 +50,16 @@ def inference(model: InferenceModel, device, loader, endpoints, args):
         prediction.append(pred)
 
     prediction = np.hstack(prediction).T
-    return {k: dict(zip(endpoints, v)) for k, v in zip(smiles, prediction)}
+
+    return \
+        {
+            k: {
+                ki: vi if ki not in processed_endpoints else np.power(10, vi)
+                for ki, vi in zip(endpoints, v)
+                if ki not in masked_endpoints
+            }
+            for k, v in zip(smiles, prediction)
+        }
 
 
 def main(args):
@@ -86,6 +98,7 @@ def main(args):
         "atom_names": config["atom_names"],
         "bond_names": config["bond_names"],
         "global_reducer": 'sum',
+        "device": device
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
 
@@ -93,7 +106,7 @@ def main(args):
         "Cat_Intravenous_LD50",
         "Cat_Oral_LD50",
         "Chicken_Oral_LD50",
-        "Dog_Oral_LD50",
+        "Dog_Intravenous_LD50",
         "Duck_Oral_LD50",
         "Guineapig_Oral_LD50",
         "Mouse_Intramuscular_LD50",
@@ -117,20 +130,34 @@ def main(args):
         "Melting_Point",
         "Boiling_Point",
         "Flash_Point",
-        "Decomposition",
+        # "Decomposition",
         "Surface_Tension",
-        "Drug_Half_Life",
-        "Viscosity",
+        # "Drug_Half_Life",
+        # "Viscosity",
         "LogS",
         "Refractive_Index",
         "LogP",
-        "Solubility"
+        # "Solubility"
+    ]
+
+    endpoints = toxicity_endpoints + physchem_endpoints
+
+    processed_endpoints = [
+        "Surface_Tension",
+        "Vapor_Pressure"
+    ]
+
+    masked_endpoints = [
+        "Rat_Skin_LD50",
+        "Rabbit_Oral_LD50",
+        "Cat_Intravenous_LD50",
+        "Rat_Inhalation_LC50"
     ]
 
     toxicity_model_params = {
         "compound_encoder": compound_encoder,
         "n_layers": args.num_layers,
-        "hidden_size": args.hidden_size,
+        "hidden_size": args.hidden_size_tox,
         "dropout_rate": args.dropout_rate,
         "task_type": "regression",
         "endpoints": toxicity_endpoints,
@@ -141,7 +168,7 @@ def main(args):
     physchem_model_params = {
         "compound_encoder": compound_encoder,
         "n_layers": args.num_layers,
-        "hidden_size": args.hidden_size,
+        "hidden_size": args.hidden_size_pc,
         "dropout_rate": args.dropout_rate,
         "task_type": "regression",
         "endpoints": physchem_endpoints,
@@ -170,7 +197,15 @@ def main(args):
         endpoint_statuses=endpoint_statuses
     ).to(device)
 
-    return inference(model=model, device=device, loader=loader, args=args, endpoints=toxicity_endpoints+physchem_endpoints)
+    a = inference(
+        model=model,
+        device=device,
+        loader=loader,
+        endpoints=endpoints,
+        masked_endpoints=masked_endpoints,
+        processed_endpoints=processed_endpoints
+    )
+    return a
 
 
 def main_cli():
@@ -186,15 +221,16 @@ def main_cli():
 
     parser.add_argument("--remove-hs", action='store_true', default=False)
 
-    parser.add_argument("--latent-size", type=int, default=128)
+    parser.add_argument("--latent-size", type=int, default=32)
     parser.add_argument("--encoder-hidden-size", type=int, default=256)
-    parser.add_argument("--num-encoder-layers", type=int, default=4)
+    parser.add_argument("--num-encoder-layers", type=int, default=8)
     parser.add_argument("--dropnode-rate", type=float, default=0.1)
     parser.add_argument("--encoder-dropout", type=float, default=0.1)
     parser.add_argument("--num-message-passing-steps", type=int, default=2)
 
-    parser.add_argument("--hidden-size", type=int, default=256)
-    parser.add_argument("--num-layers", type=int, default=4)
+    parser.add_argument("--hidden-size-pc", type=int, default=128)
+    parser.add_argument("--hidden-size-tox", type=int, default=512)
+    parser.add_argument("--num-layers", type=int, default=3)
     parser.add_argument("--dropout-rate", type=float, default=0.1)
 
     parser.add_argument("--toxicity-eval-from", type=str, default=None)
