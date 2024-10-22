@@ -99,9 +99,12 @@ class EGeoGNNModel(nn.Module):
             if masked_bond_indices is not None:
                 _bond_attr[:, i][masked_bond_indices] = bond_vocab_sizes[i] - 1
 
-        _bond_lengths[masked_bond_indices] = 0
-        _bond_angles[masked_angle_indices] = 0
-        _dihedral_angles[masked_dihedral_indices] = 0
+        if masked_bond_indices is not None:
+            _bond_lengths[masked_bond_indices] = 0
+        if masked_angle_indices is not None:
+            _bond_angles[masked_angle_indices] = 0
+        if masked_dihedral_indices is not None:
+            _dihedral_angles[masked_dihedral_indices] = 0
 
         return _x, _bond_attr, _bond_lengths, _bond_angles, _dihedral_angles
 

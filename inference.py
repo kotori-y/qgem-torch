@@ -220,7 +220,6 @@ def main(args):
         masked_endpoints=masked_endpoints,
         processed_endpoints=processed_endpoints
     )
-    return a
 
 
 def main_cli():
