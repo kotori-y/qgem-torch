@@ -13,7 +13,7 @@ export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
 CONFIG_PATH='./configs/config.json'
-STATUS_PATH='./configs/endpoint_statuses.json'
+STATUS_PATH='./configs/endpoint_status.json'
 
 LATENT_SIZE=32
 NUM_ENCODER_LAYERS=8
