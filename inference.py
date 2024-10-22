@@ -100,7 +100,22 @@ def main(args):
         "global_reducer": 'sum',
         "device": device
     }
-    compound_encoder = EGeoGNNModel(**encoder_params)
+
+    toxicity_compound_encoder = EGeoGNNModel(**encoder_params)
+    pc_compound_encoder = EGeoGNNModel(**encoder_params)
+
+    if args.toxicity_eval_from is not None:
+        assert os.path.exists(args.toxicity_eval_from)
+        checkpoint = torch.load(args.toxicity_eval_from, map_location=device)["compound_encoder"]
+        toxicity_compound_encoder.load_state_dict(checkpoint)
+
+    if args.physchem_eval_from is not None:
+        assert os.path.exists(args.physchem_eval_from)
+        checkpoint = torch.load(args.physchem_eval_from, map_location=device)["compound_encoder"]
+        pc_compound_encoder.load_state_dict(checkpoint)
+
+    pc_compound_encoder.eval()
+    toxicity_compound_encoder.eval()
 
     toxicity_endpoints = [
         "Cat_Intravenous_LD50",
@@ -155,7 +170,7 @@ def main(args):
     ]
 
     toxicity_model_params = {
-        "compound_encoder": compound_encoder,
+        "compound_encoder": toxicity_compound_encoder,
         "n_layers": args.num_layers,
         "hidden_size": args.hidden_size_tox,
         "dropout_rate": args.dropout_rate,
@@ -166,7 +181,7 @@ def main(args):
     }
 
     physchem_model_params = {
-        "compound_encoder": compound_encoder,
+        "compound_encoder": pc_compound_encoder,
         "n_layers": args.num_layers,
         "hidden_size": args.hidden_size_pc,
         "dropout_rate": args.dropout_rate,
@@ -197,7 +212,7 @@ def main(args):
         endpoint_statuses=endpoint_statuses
     ).to(device)
 
-    a = inference(
+    return inference(
         model=model,
         device=device,
         loader=loader,
