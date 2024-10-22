@@ -20,11 +20,11 @@ class EGeoGNNBlock(nn.Module):
             self.act = nn.ReLU()
         self.dropout = nn.Dropout(p=dropout_rate)
 
-    def forward(self, node_hidden, edge_hidden, edge_index):
+    def forward(self, node_hidden, edge_hidden, edge_index, node_batches=None):
         """tbd"""
         out = self.gnn(x=node_hidden, edge_attr=edge_hidden, edge_index=edge_index)
         out = self.norm(out)
-        out = self.graph_norm(out)
+        out = self.graph_norm(out, node_batches)
         if self.last_act:
             out = self.act(out)
         if self.training:

@@ -111,7 +111,7 @@ class EGeoGNNModel(nn.Module):
     def forward(
             self, AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
             x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
-            atom_batch, num_graphs,
+            atom_batch, num_bonds, num_angles, num_graphs,
             masked_atom_indices, masked_bond_indices,
             masked_angle_indices, masked_dihedral_indices,
             **kwargs
@@ -131,11 +131,16 @@ class EGeoGNNModel(nn.Module):
         edge_hidden_list = [bond_hidden]
         angle_hidden_list = [angle_hidden]
 
+        graph_idx = torch.arange(num_graphs).to(x.device)
+        bond_batch = torch.repeat_interleave(graph_idx, num_bonds, dim=0)
+        angle_batch = torch.repeat_interleave(graph_idx, num_angles, dim=0)
+
         for layer_id in range(self.n_layers):
             node_hidden = self.atom_bond_block_list[layer_id](
                 node_hidden=node_hidden_list[layer_id],
                 edge_hidden=edge_hidden_list[layer_id],
-                edge_index=AtomBondGraph_edges
+                edge_index=AtomBondGraph_edges,
+                node_batches=atom_batch
             )
 
             cur_edge_hidden = self.bond_embedding_list[layer_id](bond_attr)
@@ -143,7 +148,8 @@ class EGeoGNNModel(nn.Module):
             edge_hidden = self.bond_angle_block_list[layer_id](
                 node_hidden=cur_edge_hidden,
                 edge_hidden=angle_hidden_list[layer_id],
-                edge_index=BondAngleGraph_edges
+                edge_index=BondAngleGraph_edges,
+                node_batches=bond_batch
             )
 
             cur_angle_hidden = self.bond_angle_float_rbf_list[layer_id](bond_angles)
@@ -151,7 +157,8 @@ class EGeoGNNModel(nn.Module):
             angle_hidden = self.angle_dihedral_block_list[layer_id](
                 node_hidden=cur_angle_hidden,
                 edge_hidden=cur_dihedral_hidden,
-                edge_index=AngleDihedralGraph_edges
+                edge_index=AngleDihedralGraph_edges,
+                node_batches=angle_batch
             )
 
             node_hidden_list.append(node_hidden)
