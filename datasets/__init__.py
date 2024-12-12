@@ -32,6 +32,8 @@ class EgeognnPretrainedDataset(TorchDataset):
             force_generate=False
     ):
         self.loaded_batches = []
+        self.smiles_list = []
+        self.sdf_files = []
 
         if remove_hs:
             self.folder = os.path.join(base_path, f"egeognn_{dataset_name}_rh")
