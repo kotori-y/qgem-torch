@@ -62,11 +62,14 @@ class EgeognnPretrainedDataset(TorchDataset):
                 self.loaded_batches.extend(loaded_data)
             return
 
-        input_file = os.path.join(self.base_path, f"{self.dataset_name}.smi")
-        with open(input_file) as f:
-            smiles_list = f.readlines()
-        random.shuffle(smiles_list)
-        self.smiles_list = smiles_list
+        if not with_provided_3d:
+            input_file = os.path.join(self.base_path, f"{self.dataset_name}.smi")
+            with open(input_file) as f:
+                smiles_list = f.readlines()
+            random.shuffle(smiles_list)
+            self.smiles_list = smiles_list
+        else:
+            self.sdf_files = list(Path(base_path).glob("*.sdf"))
 
         self.use_mpi = use_mpi
         # for fucking bug of nscc-tj
@@ -103,6 +106,24 @@ class EgeognnPretrainedDataset(TorchDataset):
         mol_list = []
         with ThreadPoolExecutor() as executor:
             for result in tqdm(executor.map(self.load_smiles, smiles_list), total=len(smiles_list)):
+                mol_list.append(result)
+        return mol_list
+
+    def load_sdf_file(self, sdf_file):
+        tmp_mol = Chem.SDMolSupplier(sdf_file)[0]
+        try:
+            mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
+            if mol.GetNumBonds() < 1:
+                return
+            return mol
+        except Exception:
+            return
+
+    def load_sdf_file_list(self, sdf_file_list):
+        print("Convert SDF file to molecule")
+        mol_list = []
+        with ThreadPoolExecutor() as executor:
+            for result in tqdm(executor.map(self.load_sdf_file, sdf_file_list), total=len(sdf_file_list)):
                 mol_list.append(result)
         return mol_list
 
@@ -239,12 +260,16 @@ class EgeognnPretrainedDataset(TorchDataset):
             rank = comm.Get_rank()
             size = comm.Get_size()
 
-            chunk_size = len(self.smiles_list) // size
+            chunk_size = (len(self.smiles_list) or len(self.sdf_files)) // size
 
             start_index = rank * chunk_size
-            end_index = (rank + 1) * chunk_size if rank != size - 1 else len(self.smiles_list)
+            end_index = (rank + 1) * chunk_size if rank != size - 1 else (len(self.smiles_list) or len(self.sdf_files))
 
-            local_molecules = self.load_smiles_list(self.smiles_list[start_index:end_index])
+            if not self.with_provided_3d:
+                local_molecules = self.load_smiles_list(self.smiles_list[start_index:end_index])
+            else:
+                local_molecules = self.load_sdf_file_list(self.sdf_files[start_index:end_index])
+
             local_molecules = [mol for mol in local_molecules if mol is not None]
             results = self.process_molecules(local_molecules)
             # all_results = comm.gather(results, root=0)
@@ -269,7 +294,11 @@ class EgeognnPretrainedDataset(TorchDataset):
 
             return []
 
-        local_molecules = self.load_smiles_list(self.smiles_list)
+        if not self.with_provided_3d:
+            local_molecules = self.load_smiles_list(self.smiles_list)
+        else:
+            local_molecules = self.load_sdf_file_list(self.sdf_files)
+
         local_molecules = [mol for mol in local_molecules if mol is not None]
         results = self.process_molecules(local_molecules)
 
@@ -908,7 +937,7 @@ if __name__ == "__main__":
     #     dev=True
     # )
 
-    _smiles_list = [
+    __smiles_list = [
         "C1=CC=C(C=C1)CSCC2=NS(=O)(=O)C3=CC(=C(C=C3N2)Cl)S(=O)(=O)N",
         "CC(=O)OC1=CC=CC=C1C(=O)O",
         "CN1CCC[C@H]1COc1cccc(Cl)c1",
@@ -919,7 +948,7 @@ if __name__ == "__main__":
         atom_names=configs["atom_names"],
         bond_names=configs["bond_names"],
         remove_hs=True,
-        smiles_list=_smiles_list
+        smiles_list=__smiles_list
     )
 
     demo_loader = DataLoader(
