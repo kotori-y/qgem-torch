@@ -338,7 +338,7 @@ class EGEM(nn.Module):
     def forward(
             self, AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
             x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
-            num_graphs, atom_batch,
+            num_graphs, num_bonds, num_angles, atom_batch,
             masked_atom_indices, masked_bond_indices,
             masked_angle_indices, masked_dihedral_indices,
             **kwargs
@@ -350,7 +350,7 @@ class EGEM(nn.Module):
             AngleDihedralGraph_edges=AngleDihedralGraph_edges,
             x=x, bond_attr=bond_attr, bond_lengths=bond_lengths,
             bond_angles=bond_angles, dihedral_angles=dihedral_angles,
-            num_graphs=num_graphs, atom_batch=atom_batch,
+            num_graphs=num_graphs, num_bonds=num_bonds, num_angles=num_angles, atom_batch=atom_batch,
             masked_atom_indices=masked_atom_indices,
             masked_bond_indices=masked_bond_indices,
             masked_angle_indices=masked_angle_indices,
