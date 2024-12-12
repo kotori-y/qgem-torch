@@ -3,6 +3,7 @@ import os
 import random
 import re
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -507,6 +508,240 @@ class EgeognnFinetuneDataset(TorchDataset):
         final_results = [item for item in results if item is not None]
 
         self.save_results(final_results, batch_size=81920, rank=0)
+        print("done")
+        return final_results
+
+
+class EgeognnFinetuneMTDataset(TorchDataset):
+    def __init__(
+            self, base_path, endpoints,
+            atom_names, bond_names,
+            remove_hs=False, dev=False,
+            use_mpi=False, force_generate=False,
+            preprocess_endpoints=False
+    ):
+        self.preprocess_endpoints = preprocess_endpoints
+        self.loaded_batches = []
+
+        assert dev in [True, False]
+
+        if remove_hs:
+            self.folder = os.path.join(base_path, f"egeognn_downstream_finetune_rh")
+        else:
+            self.folder = os.path.join(base_path, f"egeognn_downstream_finetune")
+
+        self.remove_hs = remove_hs
+        self.base_path = base_path
+
+        self.atom_names = atom_names
+        self.bond_names = bond_names
+
+        self.dev = dev
+        self.endpoints = endpoints
+        self.use_mpi = use_mpi
+
+        self.mol_list = []
+        self.label_list = []
+        self.mean_list = []
+        self.std_list = []
+
+        if not os.path.exists(self.processed_dir):
+            os.makedirs(self.processed_dir, exist_ok=True)
+
+        processed_files = os.listdir(self.processed_dir)
+        if (not force_generate) and processed_files and processed_files[0].endswith(".pt"):
+            print(f'Loading data from {self.processed_dir}')
+            for file in tqdm(processed_files):
+                batch_file_path = os.path.join(self.processed_dir, file)
+                loaded_data = torch.load(batch_file_path)
+                self.loaded_batches.extend(loaded_data)
+            return
+
+        curr_index = 0
+        for input_file in Path(base_path).glob('*.csv'):
+            df = pd.read_csv(input_file, nrows=[None, 10][self.dev])
+
+            if self.preprocess_endpoints:
+                for endpoint in self.endpoints:
+                    df[f"log10_{endpoint}"] = np.log10(df[endpoint].values)
+                self.endpoints = [f"log10_{endpoint}" for endpoint in self.endpoints]
+
+            _smiles_list = df['smiles'].values
+            _label_list = df.loc[:, self.endpoints].values
+
+            for i, smiles in enumerate(_smiles_list):
+                if "." in smiles:
+                    continue
+                tmp_mol = Chem.MolFromSmiles(smiles.strip())
+
+                try:
+                    mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
+                    if mol.GetNumBonds() < 1:
+                        continue
+
+                    mol.SetProp('idx', f"{curr_index}")
+                    # self.endpoint_list.append(endpoint)
+                    self.mol_list.append(mol)
+
+                    label = _label_list[i]
+                    label_mean = _label_list.mean(axis=0)
+                    label_std = _label_list.std(axis=0) + 1e-5
+
+                    self.label_list.append((label - label_mean) / label_std)
+                    self.mean_list.append(label_mean)
+                    self.std_list.append(label_std)
+
+                    curr_index += 1
+
+                except Exception:
+                    continue
+
+        self.label_list = np.array(self.label_list)
+        self.mean_list = np.array(self.mean_list)
+        self.std_list = np.array(self.std_list)
+
+        # for fucking bug of nscc-tj
+        self.queue = None
+        if self.use_mpi:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            size = comm.Get_size()
+            self.queue = np.zeros(size)
+
+        self.loaded_batches = self.process()
+
+        super().__init__()
+
+    def __len__(self):
+        return len(self.loaded_batches)
+
+    def __getitem__(self, item):
+        return self.loaded_batches[item]
+
+    def process(self):
+        print("Converting pickle files into graphs...")
+        return self.process_egeognn_finetune()
+
+    @property
+    def processed_dir(self):
+        return os.path.join(self.folder, 'processed')
+
+    def save_results(self, final_results, batch_size, rank):
+        if len(final_results) == 0:
+            return
+
+        batch_data = []
+        print('saving results...')
+
+        for idx, data in enumerate(final_results):
+            batch_data.append(data)
+            if len(batch_data) >= batch_size:
+                batch_file_path = os.path.join(self.processed_dir, f'batch_{idx // batch_size}_{rank}.pt')
+                torch.save(batch_data, batch_file_path)
+                batch_data = []
+
+        if batch_data:
+            batch_file_path = os.path.join(self.processed_dir, f'batch_{len(final_results) // batch_size}_{rank}.pt')
+            torch.save(batch_data, batch_file_path)
+
+    def mol_to_egeognn_graph_data_MMFF3d(self, mol, numConfs=3):
+        if len(mol.GetAtoms()) <= 400:
+            mol, atom_poses = MoleculePositionToolKit.get_MMFF_atom_poses(mol, numConfs=numConfs, numThreads=0)
+        else:
+            atom_poses = MoleculePositionToolKit.get_2d_atom_poses(mol)
+
+        return mol_to_egeognn_graph_data(
+            mol=mol,
+            atom_names=self.atom_names,
+            bond_names=self.bond_names,
+            atom_poses=atom_poses
+        )
+
+    def process_molecule(self, mol):
+        try:
+            graph = self.mol_to_egeognn_graph_data_MMFF3d(mol)
+
+            data = CustomData()
+            data.AtomBondGraph_edges = torch.from_numpy(graph["edges"].T).to(torch.int64)
+            data.BondAngleGraph_edges = torch.from_numpy(graph["BondAngleGraph_edges"].T).to(torch.int64)
+            data.AngleDihedralGraph_edges = torch.from_numpy(graph["AngleDihedralGraph_edges"].T).to(torch.int64)
+
+            data.node_feat = torch.from_numpy(graph["node_feat"]).to(torch.int64)
+            data.edge_attr = torch.from_numpy(graph["edge_attr"]).to(torch.int64)
+            data.bond_lengths = torch.from_numpy(graph["bond_length"]).to(torch.float32)
+            data.bond_angles = torch.from_numpy(graph["bond_angle"]).to(torch.float32)
+            data.dihedral_angles = torch.from_numpy(graph["dihedral_angle"]).to(torch.float32)
+
+            data.atom_poses = torch.from_numpy(graph["atom_pos"]).to(torch.float32)
+            data.n_atoms = graph["num_nodes"]
+            data.n_bonds = graph["num_edges"]
+            data.n_angles = graph["num_angles"]
+
+            idx = int(mol.GetProp("idx"))
+            data.label = torch.from_numpy(self.label_list[idx]).to(torch.float32)
+            data.label_mean = torch.from_numpy(self.mean_list[idx]).to(torch.float32)
+            data.label_std = torch.from_numpy(self.std_list[idx]).to(torch.float32)
+            data.smiles = Chem.MolToSmiles(mol)
+
+            return data
+
+        except Exception:
+            return None
+
+    def process_molecules(self, molecules):
+        try:
+            results = []
+            with ThreadPoolExecutor() as executor:
+                for result in tqdm(executor.map(self.process_molecule, molecules), total=len(molecules)):
+                    if result is None:
+                        print(f"Failed to process a molecule.")
+                    results.append(result)
+            return results
+        except:
+            return []
+
+    def process_egeognn_finetune(self):
+        if self.use_mpi:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            rank = comm.Get_rank()
+            size = comm.Get_size()
+
+            chunk_size = len(self.mol_list) // size
+
+            start_index = rank * chunk_size
+            end_index = (rank + 1) * chunk_size if rank != size - 1 else len(self.mol_list)
+
+            local_molecules = self.mol_list[start_index:end_index]
+            local_molecules = [mol for mol in local_molecules if mol is not None]
+            results = self.process_molecules(local_molecules)
+            # all_results = comm.gather(results, root=0)
+
+            final_results = [item for item in results if item is not None]
+
+            self.save_results(final_results, batch_size=81920, rank=rank)
+            print(f"NODE {rank} done!")
+
+            self.queue[rank] = 1
+            for node in range(size):
+                if node != rank:
+                    comm.isend(rank, dest=node, tag=11)
+
+            print(f"NODE {rank}: waiting for other node...")
+            while self.queue.sum() != size:
+                for node in range(size):
+                    if node != rank:
+                        tgt = comm.recv(source=node, tag=11)
+                        self.queue[tgt] = 1
+                continue
+
+            return []
+
+        local_molecules = [mol for mol in self.mol_list if mol is not None]
+        results = self.process_molecules(local_molecules)
+        final_results = [item for item in results if item is not None]
+
+        self.save_results(final_results, batch_size=8192, rank=0)
         print("done")
         return final_results
 
