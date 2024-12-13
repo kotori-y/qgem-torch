@@ -136,7 +136,7 @@ class EgeognnPretrainedDataset(TorchDataset):
         if os.path.isfile(os.path.join(path, "split_dict.pt")):
             return torch.load(os.path.join(path, "split_dict.pt"))
 
-    def prepare_pretrain_task(self, graph, quantum_property=False):
+    def prepare_pretrain_task(self, graph):
         """
         prepare graph for pretrain task
         """
@@ -149,12 +149,11 @@ class EgeognnPretrainedDataset(TorchDataset):
 
         graph = mask_egeognn_graph(graph, mask_ratio=self.mask_ratio)
 
-        if quantum_property:
-            graph['atom_cm5'] = np.array(graph.get('cm5', []))
-            graph['atom_espc'] = np.array(graph.get('espc', []))
-            graph['atom_hirshfeld'] = np.array(graph.get('hirshfeld', []))
-            graph['atom_npa'] = np.array(graph.get('npa', []))
-            graph['bo_bond_order'] = np.array(graph.get('bond_order', []))
+        graph['atom_cm5'] = np.array(graph.get('atom_cm5', []))
+        graph['atom_espc'] = np.array(graph.get('atom_espc', []))
+        graph['atom_hirshfeld'] = np.array(graph.get('atom_hirshfeld', []))
+        graph['atom_npa'] = np.array(graph.get('atom_npa', []))
+        graph['bond_order'] = np.array(graph.get('bond_order', []))
 
         return graph
 
@@ -211,6 +210,12 @@ class EgeognnPretrainedDataset(TorchDataset):
             data.masked_bond_indices = torch.from_numpy(graph["masked_bond_indices"]).to(torch.int64)
             data.masked_angle_indices = torch.from_numpy(graph["masked_angle_indices"]).to(torch.int64)
             data.masked_dihedral_indices = torch.from_numpy(graph["masked_dihedral_indices"]).to(torch.int64)
+
+            data.cm5_charges = torch.from_numpy(graph['atom_cm5']).to(torch.float32)
+            data.espc_charges = torch.from_numpy(graph['atom_espc']).to(torch.float32)
+            data.hirshfeld_charges = torch.from_numpy(graph['atom_hirshfeld']).to(torch.float32)
+            data.npa_charges = torch.from_numpy(graph['atom_npa']).to(torch.float32)
+            data.bond_orders = torch.from_numpy(graph['bond_order']).to(torch.float32)
 
             data.smiles = Chem.MolToSmiles(mol)
 
@@ -303,7 +308,7 @@ class EgeognnPretrainedDataset(TorchDataset):
         results = self.process_molecules(local_molecules)
 
         final_results = [item for item in results if item is not None]
-        self.save_results(final_results, batch_size=81920, rank=0)
+        self.save_results(final_results, batch_size=8192, rank=0)
         print("done")
         return final_results
 

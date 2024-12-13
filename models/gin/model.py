@@ -233,6 +233,66 @@ class EGEM(nn.Module):
             )
             self.Adc_loss = nn.CrossEntropyLoss()
 
+        # cm5 charges with regression
+        if 'CM5' in pretrain_tasks:
+            self.cm5_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.cm5_loss = nn.SmoothL1Loss()
+
+        # espc charges with regression
+        if 'ESPC' in pretrain_tasks:
+            self.espc_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.espc_loss = nn.SmoothL1Loss()
+
+        # hirshfeld charges with regression
+        if 'HIRSHFELD' in pretrain_tasks:
+            self.hirshfeld_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.hirshfeld_loss = nn.SmoothL1Loss()
+
+        # npa charges with regression
+        if 'NPA' in pretrain_tasks:
+            self.npa_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.npa_loss = nn.SmoothL1Loss()
+
+        # bond wiberg order with regression
+        if 'WIBERG' in pretrain_tasks:
+            self.wiberg_mlp = MLP(
+                input_size=compound_encoder.latent_size * 2,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.wiberg_loss = nn.SmoothL1Loss()
+
     def _get_Blr_loss(self, atom_attr, bond_lengths, AtomBondGraph_edges, masked_bond_indices=None):
         masked_atom_i, masked_atom_j = AtomBondGraph_edges.index_select(1, masked_bond_indices)
         atom_attr_i = atom_attr.index_select(0, masked_atom_i)
@@ -291,10 +351,60 @@ class EGEM(nn.Module):
             dihedral_angles[masked_dihedral_indices].unsqueeze(-1)
         )
 
+    def _get_cm5_loss(self, atom_attr, cm5_charges, masked_atom_indices=None):
+        masked_atom_i = masked_atom_indices
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        pred = self.cm5_mlp(atom_attr_i)
+        return self.cm5_loss(
+            pred,
+            cm5_charges[masked_atom_indices].unsqueeze(-1)
+        )
+
+    def _get_espc_loss(self, atom_attr, espc_charges, masked_atom_indices=None):
+        masked_atom_i = masked_atom_indices
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        pred = self.espc_mlp(atom_attr_i)
+        return self.espc_loss(
+            pred,
+            espc_charges[masked_atom_indices].unsqueeze(-1)
+        )
+
+    def _get_hirshfeld_loss(self, atom_attr, hirshfeld_charges, masked_atom_indices=None):
+        masked_atom_i = masked_atom_indices
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        pred = self.hirshfeld_mlp(atom_attr_i)
+        return self.hirshfeld_loss(
+            pred,
+            hirshfeld_charges[masked_atom_indices].unsqueeze(-1)
+        )
+
+    def _get_npa_loss(self, atom_attr, npa_charges, masked_atom_indices=None):
+        masked_atom_i = masked_atom_indices
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        pred = self.npa_mlp(atom_attr_i)
+        return self.npa_loss(
+            pred,
+            npa_charges[masked_atom_indices].unsqueeze(-1)
+        )
+
+    def _get_wiberg_loss(self, atom_attr, bond_orders, AtomBondGraph_edges, masked_bond_indices=None):
+        masked_atom_i, masked_atom_j = AtomBondGraph_edges.index_select(1, masked_bond_indices)
+        atom_attr_i = atom_attr.index_select(0, masked_atom_i)
+        atom_attr_j = atom_attr.index_select(0, masked_atom_j)
+        atom_attr_ij = torch.cat((atom_attr_i, atom_attr_j), dim=1)
+
+        pred = self.wiberg_mlp(atom_attr_ij)
+        return self.wiberg_loss(
+            pred,
+            bond_orders[masked_bond_indices].unsqueeze(-1)
+        )
+
     def compute_loss(
             self, bond_lengths, bond_angles, dihedral_angles,
             AtomBondGraph_edges, atom_attr, BondAngleGraph_edges, AngleDihedralGraph_edges,
-            masked_bond_indices=None, masked_angle_indices=None, masked_dihedral_indices=None
+            cm5_charges, espc_charges, hirshfeld_charges, npa_charges, bond_orders,
+            masked_atom_indices=None, masked_bond_indices=None,
+            masked_angle_indices=None, masked_dihedral_indices=None
     ):
         loss = 0
         loss_dict = {}
@@ -332,12 +442,59 @@ class EGEM(nn.Module):
             loss += dihedral_angle_loss
             loss_dict["dihedral_angle_loss"] = dihedral_angle_loss.detach().item()
 
+        if "CM5" in self.pretrain_tasks:
+            cm5_charge_loss = self._get_cm5_loss(
+                atom_attr=atom_attr,
+                cm5_charges=cm5_charges,
+                masked_atom_indices=masked_atom_indices
+            )
+            loss += cm5_charge_loss
+            loss_dict["cm5_charge_loss"] = cm5_charge_loss.detach().item()
+
+        if "ESPC" in self.pretrain_tasks:
+            espc_charge_loss = self._get_espc_loss(
+                atom_attr=atom_attr,
+                espc_charges=espc_charges,
+                masked_atom_indices=masked_atom_indices
+            )
+            loss += espc_charge_loss
+            loss_dict["espc_charge_loss"] = espc_charge_loss.detach().item()
+
+        if "HIRSHFELD" in self.pretrain_tasks:
+            hirshfeld_charge_loss = self._get_hirshfeld_loss(
+                atom_attr=atom_attr,
+                hirshfeld_charges=hirshfeld_charges,
+                masked_atom_indices=masked_atom_indices
+            )
+            loss += hirshfeld_charge_loss
+            loss_dict["hirshfeld_charge_loss"] = hirshfeld_charge_loss.detach().item()
+
+        if "NPA" in self.pretrain_tasks:
+            npa_charge_loss = self._get_npa_loss(
+                atom_attr=atom_attr,
+                npa_charges=npa_charges,
+                masked_atom_indices=masked_atom_indices
+            )
+            loss += npa_charge_loss
+            loss_dict["npa_charge_loss"] = npa_charge_loss.detach().item()
+
+        if "WIBERG" in self.pretrain_tasks:
+            wiberg_order_loss = self._get_wiberg_loss(
+                atom_attr=atom_attr,
+                bond_orders=bond_orders,
+                AtomBondGraph_edges=AtomBondGraph_edges,
+                masked_bond_indices=masked_bond_indices
+            )
+            loss += wiberg_order_loss
+            loss_dict["wiberg_order_loss"] = wiberg_order_loss.detach().item()
+
         loss_dict["loss"] = loss.detach().item()
         return loss, loss_dict
 
     def forward(
             self, AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
             x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
+            cm5_charges, espc_charges, hirshfeld_charges, npa_charges, bond_orders,
             num_graphs, num_bonds, num_angles, atom_batch,
             masked_atom_indices, masked_bond_indices,
             masked_angle_indices, masked_dihedral_indices,
@@ -350,7 +507,8 @@ class EGEM(nn.Module):
             AngleDihedralGraph_edges=AngleDihedralGraph_edges,
             x=x, bond_attr=bond_attr, bond_lengths=bond_lengths,
             bond_angles=bond_angles, dihedral_angles=dihedral_angles,
-            num_graphs=num_graphs, num_bonds=num_bonds, num_angles=num_angles, atom_batch=atom_batch,
+            num_graphs=num_graphs, num_bonds=num_bonds,
+            num_angles=num_angles, atom_batch=atom_batch,
             masked_atom_indices=masked_atom_indices,
             masked_bond_indices=masked_bond_indices,
             masked_angle_indices=masked_angle_indices,
@@ -361,10 +519,16 @@ class EGEM(nn.Module):
             atom_attr=atom_attr,
             bond_lengths=bond_lengths,
             bond_angles=bond_angles,
+            cm5_charges=cm5_charges,
+            espc_charges=espc_charges,
+            hirshfeld_charges=hirshfeld_charges,
+            npa_charges=npa_charges,
+            bond_orders=bond_orders,
             dihedral_angles=dihedral_angles,
             AtomBondGraph_edges=AtomBondGraph_edges,
             BondAngleGraph_edges=BondAngleGraph_edges,
             AngleDihedralGraph_edges=AngleDihedralGraph_edges,
+            masked_atom_indices=masked_atom_indices,
             masked_bond_indices=masked_bond_indices,
             masked_angle_indices=masked_angle_indices,
             masked_dihedral_indices=masked_dihedral_indices,

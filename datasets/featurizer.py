@@ -378,16 +378,16 @@ def mol_to_egeognn_graph_data(mol, atom_names, bond_names, atom_poses):
 
     props = mol.GetPropsAsDict()
     if 'cm5' in props:
-        data['cm5'] = np.array(json.loads(props['cm5'])).astype('float32')
+        data['atom_cm5'] = np.array(json.loads(props['cm5'])).astype('float32')
 
     if 'espc' in props:
-        data['espc'] = np.array(json.loads(props['espc'])).astype('float32')
+        data['atom_espc'] = np.array(json.loads(props['espc'])).astype('float32')
 
     if 'cm5' in props:
-        data['hirshfeld'] = np.array(json.loads(props['hirshfeld'])).astype('float32')
+        data['atom_hirshfeld'] = np.array(json.loads(props['hirshfeld'])).astype('float32')
 
     if 'cm5' in props:
-        data['npa'] = np.array(json.loads(props['npa'])).astype('float32')
+        data['atom_npa'] = np.array(json.loads(props['npa'])).astype('float32')
 
     if 'wiberg' in props:
         wiberg = np.array(json.loads(props['wiberg'])).astype('float32')

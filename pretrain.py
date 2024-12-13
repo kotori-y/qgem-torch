@@ -17,6 +17,31 @@ from tqdm import tqdm
 
 from datasets import EgeognnPretrainedDataset
 from utils import init_distributed_mode, WarmCosine
+#
+# import sys
+# import torch
+# from torch.utils.data import dataloader
+# from torch.multiprocessing import reductions
+# from multiprocessing.reduction import ForkingPickler
+#
+# default_collate_func = dataloader.default_collate
+#
+#
+# def default_collate_override(batch):
+#     dataloader._use_shared_memory = False
+#     return default_collate_func(batch)
+#
+#
+# setattr(dataloader, 'default_collate', default_collate_override)
+#
+#
+# for t in torch._storage_classes:
+#     if sys.version_info[0] == 2:
+#         if t in ForkingPickler.dispatch:
+#             del ForkingPickler.dispatch[t]
+#     else:
+#         if t in ForkingPickler._extra_reducers:
+#             del ForkingPickler._extra_reducers[t]
 
 
 def train(model, device, loader, optimizer, scheduler, args):
@@ -36,6 +61,11 @@ def train(model, device, loader, optimizer, scheduler, args):
             "bond_lengths": batch.bond_lengths.to(device),
             "bond_angles": batch.bond_angles.to(device),
             "dihedral_angles": batch.dihedral_angles.to(device),
+            "cm5_charges": batch.cm5_charges.to(device),
+            "espc_charges": batch.espc_charges.to(device),
+            "hirshfeld_charges": batch.hirshfeld_charges.to(device),
+            "npa_charges": batch.npa_charges.to(device),
+            "bond_orders": batch.bond_orders.to(device),
             "num_graphs": batch.num_graphs,
             "num_atoms": batch.n_atoms.to(device),
             "num_bonds": batch.n_bonds.to(device),
@@ -93,6 +123,11 @@ def evaluate(model, device, loader, args):
             "bond_lengths": batch.bond_lengths.to(device),
             "bond_angles": batch.bond_angles.to(device),
             "dihedral_angles": batch.dihedral_angles.to(device),
+            "cm5_charges": batch.cm5_charges.to(device),
+            "espc_charges": batch.espc_charges.to(device),
+            "hirshfeld_charges": batch.hirshfeld_charges.to(device),
+            "npa_charges": batch.npa_charges.to(device),
+            "bond_orders": batch.bond_orders.to(device),
             "num_graphs": batch.num_graphs,
             "num_atoms": batch.n_atoms.to(device),
             "num_bonds": batch.n_bonds.to(device),
@@ -371,7 +406,7 @@ def main_cli():
 
     parser.add_argument("--checkpoint-dir", type=str, default="")
     parser.add_argument("--eval-from", type=str, default=None)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--use-adamw", action='store_true', default=False)
     parser.add_argument("--lr", type=float, default=1e-3)
