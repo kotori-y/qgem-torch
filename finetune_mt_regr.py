@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from torch import optim
 from torch.utils.data import DistributedSampler, random_split
 from torch.utils.tensorboard import SummaryWriter
@@ -20,12 +20,22 @@ from models.downstream import DownstreamMTModel
 from utils import exempt_parameters, init_distributed_mode
 
 
+def calc_rmse(labels, preds):
+    """tbd"""
+    return np.sqrt(np.mean((preds - labels) ** 2))
+
+
+def calc_mae(labels, preds):
+    """tbd"""
+    return np.mean(np.abs(preds - labels))
+
+
 def train(model: DownstreamMTModel, device, loader, encoder_opt, head_opt, args):
     model.train()
 
     loss_accum_dict = defaultdict(float)
     counter = {}
-    prediction_logs = {}
+    prediction_logs = {'y_true': [], 'y_pred': []}
 
     pbar = tqdm(loader, desc="Iteration", disable=args.disable_tqdm)
 
@@ -76,11 +86,9 @@ def train(model: DownstreamMTModel, device, loader, encoder_opt, head_opt, args)
         label = label_scaled * label_std + label_mean
         pred = pred_scaled * label_std + label_mean
 
-        for i, endpoint in enumerate(args.endpoints):
-            if endpoint not in prediction_logs:
-                prediction_logs[endpoint] = {'y_true': [], 'y_pred': []}
-            prediction_logs[endpoint]['y_true'] += label[:, i].detach().cpu().numpy().tolist()
-            prediction_logs[endpoint]['y_pred'] += pred[:, i].detach().cpu().numpy().tolist()
+        for i in range(len(args.endpoints)):
+            prediction_logs['y_true'] += label[:, i].detach().cpu().numpy().tolist()
+            prediction_logs['y_pred'] += pred[:, i].detach().cpu().numpy().tolist()
 
         for k, v in loss_dict.items():
             counter[k] = counter.get(k, 0) + 1
@@ -93,10 +101,12 @@ def train(model: DownstreamMTModel, device, loader, encoder_opt, head_opt, args)
     for k in loss_accum_dict.keys():
         loss_accum_dict[k] /= counter[k]
 
-    for endpoint, results in prediction_logs.items():
-        # loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
-        loss_accum_dict[f"{endpoint}_rmse"] = mean_squared_error(results['y_true'], results['y_pred']) ** 0.5
+    metric_func = calc_rmse if args.metric == "rmse" else calc_mae
 
+    loss_accum_dict[f"{args.dataset_name}_{args.metric}"] = metric_func(
+        np.array(prediction_logs["y_true"]),
+        np.array(prediction_logs["y_pred"])
+    )
     return loss_accum_dict
 
 
@@ -106,7 +116,10 @@ def evaluate(model: DownstreamMTModel, device, loader, args):
 
     loss_accum_dict = defaultdict(float)
     counter = {}
-    prediction_logs = {}
+
+    total_pred = []
+    total_label = []
+
     pbar = tqdm(loader, desc="Iteration", disable=args.disable_tqdm)
 
     for step, batch in enumerate(pbar):
@@ -147,16 +160,8 @@ def evaluate(model: DownstreamMTModel, device, loader, args):
         label = label_scaled * label_std + label_mean
         pred = pred_scaled * label_std + label_mean
 
-        for i, endpoint in enumerate(args.endpoints):
-            if endpoint not in prediction_logs:
-                prediction_logs[endpoint] = {'y_true': [], 'y_pred': []}
-            prediction_logs[endpoint]['y_true'] += label[:, i].detach().cpu().numpy().tolist()
-            prediction_logs[endpoint]['y_pred'] += pred[:, i].detach().cpu().numpy().tolist()
-
-        prediction_logs['all'] = {
-            'y_true': label.detach().cpu().numpy().flatten().tolist(),
-            'y_pred': pred.detach().cpu().numpy().flatten().tolist()
-        }
+        total_pred.append(pred.detach().cpu().numpy().tolist())
+        total_label.append(label.detach().cpu().numpy().tolist())
 
         for k, v in loss_dict.items():
             counter[k] = counter.get(k, 0) + 1
@@ -167,13 +172,17 @@ def evaluate(model: DownstreamMTModel, device, loader, args):
             pbar.set_description(description)
 
     for k in loss_accum_dict.keys():
-
         loss_accum_dict[k] /= counter[k]
 
-    for endpoint, results in prediction_logs.items():
-        # loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
-        loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
+    total_pred = np.concatenate(total_pred, 0)
+    total_label = np.concatenate(total_label, 0)
 
+    metric_func = calc_rmse if args.metric == "rmse" else calc_mae
+
+    loss_accum_dict[f"{args.dataset_name}_{args.metric}"] = metric_func(
+        np.array(total_label),
+        np.array(total_pred)
+    )
     return loss_accum_dict
 
 
@@ -191,6 +200,11 @@ def main(args):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     random.seed(args.seed)
+
+    if args.dataset_name in ['lipo', 'esol']:
+        args.metric = 'rmse'
+    else:
+        args.metric = 'mae'
 
     device = torch.device(args.device)
     with open(args.config_path) as f:
@@ -399,8 +413,10 @@ def main(args):
                     if "r2" in k:
                         tb_writer.add_scalar(f"r2_score/{k}", v, epoch)
                         continue
-                    if "mse" in k:
-                        tb_writer.add_scalar(f"mse/{k}", v, epoch)
+                    if "rmse" in k:
+                        tb_writer.add_scalar(f"rmse/{k}", v, epoch)
+                    if "mae" in k:
+                        tb_writer.add_scalar(f"mae/{k}", v, epoch)
 
 
 def main_cli():
@@ -412,7 +428,6 @@ def main_cli():
     parser.add_argument("--task-type", type=str)
 
     parser.add_argument("--config-path", type=str)
-    parser.add_argument("--dataset_name", choices=['lipo'])
     parser.add_argument("--dataset-base-path", type=str)
 
     parser.add_argument("--remove-hs", action='store_true', default=False)
@@ -444,7 +459,8 @@ def main_cli():
     parser.add_argument("--distributed", action='store_true', default=False)
     parser.add_argument("--use_mpi", action='store_true', default=False)
 
-    parser.add_argument("--endpoints", type=str, nargs="+")
+    parser.add_argument("--dataset-name", choices=['lipo', 'esol', 'qm7', 'qm8', 'qm9'])
+    parser.add_argument("--task-endpoints-file", type=str)
     parser.add_argument("--preprocess-endpoints", action='store_true', default=False)
 
     parser.add_argument("--epochs", type=int, default=10)
@@ -459,6 +475,11 @@ def main_cli():
 
     args = parser.parse_args()
     print(args)
+
+    with open(args.task_endpoints_file) as f:
+        endpoints = json.load(f)
+
+    args.endpoints = endpoints[args.dataset_name]
 
     init_distributed_mode(args)
 
