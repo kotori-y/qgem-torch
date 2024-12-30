@@ -56,7 +56,7 @@ def inference(model: InferenceMTModel, device, loader, endpoints, return_value=T
     }
 
 
-def main(args):
+def main_inference(args):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -172,7 +172,7 @@ def main_cli():
     args = parser.parse_args()
     print(args)
 
-    prediction = main(args)
+    prediction = main_inference(args)
     print(prediction)
 
 

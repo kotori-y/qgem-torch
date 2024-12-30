@@ -106,6 +106,32 @@ def calculate_rdkit3d(mols, n_jobs):
     return fps
 
 
+def calculate_descriptor(mols):
+    """
+
+    :rtype: object
+    """
+    pubchem_fp = calculate_pubchem(mols, n_jobs=1)
+    cats_fp = calculate_cats(mols, n_jobs=1)
+    charges_fp = calculate_charges(mols, n_jobs=1)
+    estate_fp = calculate_estate(mols, n_jobs=1)
+    geary_fp = calculate_geary(mols, n_jobs=1)
+    # ifg_fp = calculate_ifg(mols, n_jobs=1)
+    moe_fp = calculate_moe(mols, n_jobs=1)
+    rdkit3d_fp = calculate_rdkit3d(mols, n_jobs=1)
+
+    return np.hstack([
+        pubchem_fp,
+        cats_fp,
+        charges_fp,
+        estate_fp,
+        geary_fp,
+        # ifg_fp,
+        moe_fp,
+        rdkit3d_fp
+    ])
+
+
 if __name__ == "__main__":
     from rdkit import Chem
 
@@ -135,23 +161,23 @@ if __name__ == "__main__":
     ]
     _mols = [Chem.MolFromSmiles(smi) for smi in smis]
 
-    pubchem_fp = calculate_pubchem(_mols, n_jobs=1)
-    cats_fp = calculate_cats(_mols, n_jobs=1)
-    charges_fp = calculate_charges(_mols, n_jobs=1)
-    estate_fp = calculate_estate(_mols, n_jobs=1)
-    geary_fp = calculate_geary(_mols, n_jobs=1)
-    ifg_fp = calculate_ifg(_mols, n_jobs=1)
-    moe_fp = calculate_moe(_mols, n_jobs=1)
-    rdkit3d_fp = calculate_rdkit3d(_mols, n_jobs=1)
-
-    mol_desc = np.hstack([
-        pubchem_fp,
-        cats_fp,
-        charges_fp,
-        estate_fp,
-        geary_fp,
-        ifg_fp,
-        moe_fp,
-        rdkit3d_fp
-    ])
-    print(mol_desc, mol_desc.shape)
+    # pubchem_fp = calculate_pubchem(_mols, n_jobs=1)
+    # cats_fp = calculate_cats(_mols, n_jobs=1)
+    # charges_fp = calculate_charges(_mols, n_jobs=1)
+    # estate_fp = calculate_estate(_mols, n_jobs=1)
+    # geary_fp = calculate_geary(_mols, n_jobs=1)
+    # ifg_fp = calculate_ifg(_mols, n_jobs=1)
+    # moe_fp = calculate_moe(_mols, n_jobs=1)
+    # rdkit3d_fp = calculate_rdkit3d(_mols, n_jobs=1)
+    #
+    # mol_desc = np.hstack([
+    #     pubchem_fp,
+    #     cats_fp,
+    #     charges_fp,
+    #     estate_fp,
+    #     geary_fp,
+    #     ifg_fp,
+    #     moe_fp,
+    #     rdkit3d_fp
+    # ])
+    print(calculate_descriptor(_mols))
