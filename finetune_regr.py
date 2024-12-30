@@ -234,6 +234,9 @@ def main(args):
     )
 
     train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+    test_dataset = [x for x in test_dataset if x.smiles not in args.exclude_smiles]
+    train_smiles = [x.smiles for x in train_dataset]
+    test_smiles = [x.smiles for x in test_dataset]
 
     if args.distributed:
         sampler_train = DistributedSampler(train_dataset)
@@ -411,6 +414,8 @@ def main(args):
                 "model_state_dict": model_without_ddp.state_dict(),
                 "encoder_optimizer_state_dict": encoder_optimizer.state_dict() if not args.frozen_encoder else {},
                 "head_optimizer_state_dict": head_optimizer.state_dict(),
+                "train_smiles": np.array(train_smiles),
+                "test_smiles": np.array(test_smiles),
                 # "scheduler_state_dict": scheduler.state_dict(),
                 "args": args,
             }
@@ -470,6 +475,7 @@ def main_cli():
 
     parser.add_argument("--endpoints", type=str, nargs="+")
     parser.add_argument("--preprocess-endpoints", type=str, nargs="+")
+    parser.add_argument("--exclude-smiles", type=str, nargs="+")
 
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--log-interval", type=int, default=5)

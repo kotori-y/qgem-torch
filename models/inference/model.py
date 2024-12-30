@@ -1,7 +1,7 @@
 import numpy as np
 from torch import nn
 
-from models.downstream import DownstreamModel
+from models.downstream import DownstreamModel, DownstreamMTModel
 
 
 class InferenceModel(nn.Module):
@@ -52,5 +52,37 @@ class InferenceModel(nn.Module):
         pred_std = np.array([
             self.endpoint_statuses[endpoint]['std'] for endpoint in self.toxicity_endpoints + self.physchem_endpoints
         ]).reshape(-1, 1)
+
+        return pred_scaled * pred_std + pred_mean
+
+
+class InferenceMTModel(nn.Module):
+    def __init__(self, pred_model: DownstreamMTModel, endpoints, endpoint_statuses):
+        super(InferenceMTModel, self).__init__()
+
+        self.pred_model = pred_model
+        self.endpoints = endpoints
+        self.endpoint_statuses = endpoint_statuses
+
+    def forward(
+            self,
+            AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
+            pos, x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
+            num_atoms, num_bonds, num_angles, num_graphs, atom_batch
+    ):
+
+        pred_scaled = self.pred_model(
+            AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
+            pos, x, bond_attr, bond_lengths, bond_angles, dihedral_angles,
+            num_atoms, num_bonds, num_angles, num_graphs, atom_batch,
+        )
+
+        pred_mean = np.array([
+            self.endpoint_statuses[endpoint]['mean'] for endpoint in self.endpoints
+        ])
+
+        pred_std = np.array([
+            self.endpoint_statuses[endpoint]['std'] for endpoint in self.endpoints
+        ])
 
         return pred_scaled * pred_std + pred_mean

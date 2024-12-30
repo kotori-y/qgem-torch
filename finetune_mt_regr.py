@@ -207,6 +207,7 @@ def main(args):
         args.metric = 'mae'
 
     device = torch.device(args.device)
+
     with open(args.config_path) as f:
         config = json.load(f)
 

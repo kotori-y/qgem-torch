@@ -11,6 +11,7 @@ from datasets import EgeognnInferenceDataset
 from models.downstream import DownstreamModel
 from models.gin import EGeoGNNModel
 from models.inference import InferenceModel
+import random
 
 
 def inference(model: InferenceModel, device, loader, endpoints, masked_endpoints=None, processed_endpoints=None):
@@ -63,6 +64,11 @@ def inference(model: InferenceModel, device, loader, endpoints, masked_endpoints
 
 
 def main(args):
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    random.seed(args.seed)
+
     device = torch.device(args.device)
 
     with open(args.config_path) as f:
@@ -164,9 +170,11 @@ def main(args):
 
     masked_endpoints = [
         "Rat_Skin_LD50",
-        "Rabbit_Oral_LD50",
-        "Cat_Intravenous_LD50",
-        "Rat_Inhalation_LC50"
+        # "Rabbit_Oral_LD50",  # 0.7087
+        # "Cat_Intravenous_LD50",  # 0.9013
+        "Rat_Inhalation_LC50",
+        "Mouse_Intramuscular_LD50",
+        "Duck_Oral_LD50"
     ]
 
     toxicity_model_params = {
@@ -252,6 +260,8 @@ def main_cli():
 
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=4)
+
+    parser.add_argument("--seed", type=int, default=777)
 
     args = parser.parse_args()
     print(args)

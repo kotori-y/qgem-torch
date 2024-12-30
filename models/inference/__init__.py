@@ -1,1 +1,1 @@
-from models.inference.model import InferenceModel
+from models.inference.model import InferenceModel, InferenceMTModel
