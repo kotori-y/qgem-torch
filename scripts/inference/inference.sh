@@ -13,7 +13,7 @@ export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
 CONFIG_PATH='./configs/config.json'
-STATUS_PATH='./configs/endpoint_status.json'
+STATUS_PATH='./configs/endpoint_statuses.json'
 
 LATENT_SIZE=32
 NUM_ENCODER_LAYERS=8
@@ -28,12 +28,12 @@ DROPOUT_RATE=0.2
 BATCH_SIZE=128
 NUM_WORKERS=6
 
-DEVICE='cuda'
+DEVICE='cpu'
 
 SMILES_LIST=$1
 
-TOXICITY_EVAL_FROM='./outs/checkpoints/downstream/toxicity-wash-3/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_99.pt'
-PHYSCHEM_EVAL_FROM='./outs/checkpoints/downstream/physchem-wash-2/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_22.pt'
+TOXICITY_EVAL_FROM='./outs/checkpoints/downstream_100M/toxicity-wash-3s-3/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_133.pt'
+PHYSCHEM_EVAL_FROM='./outs/checkpoints/downstream_100M/physchem-wash-2/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_98.pt'
 
 
 python inference.py \
