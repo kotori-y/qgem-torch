@@ -110,19 +110,6 @@ def main(args):
     toxicity_compound_encoder = EGeoGNNModel(**encoder_params)
     pc_compound_encoder = EGeoGNNModel(**encoder_params)
 
-    if args.toxicity_eval_from is not None:
-        assert os.path.exists(args.toxicity_eval_from)
-        checkpoint = torch.load(args.toxicity_eval_from, map_location=device)["compound_encoder"]
-        toxicity_compound_encoder.load_state_dict(checkpoint)
-
-    if args.physchem_eval_from is not None:
-        assert os.path.exists(args.physchem_eval_from)
-        checkpoint = torch.load(args.physchem_eval_from, map_location=device)["compound_encoder"]
-        pc_compound_encoder.load_state_dict(checkpoint)
-
-    pc_compound_encoder.eval()
-    toxicity_compound_encoder.eval()
-
     toxicity_endpoints = [
         "Cat_Intravenous_LD50",
         "Cat_Oral_LD50",

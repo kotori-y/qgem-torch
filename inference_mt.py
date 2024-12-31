@@ -101,12 +101,6 @@ def main_inference(args):
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
 
-    if args.eval_from is not None:
-        assert os.path.exists(args.eval_from)
-        checkpoint = torch.load(args.eval_from, map_location=device)["compound_encoder"]
-        compound_encoder.load_state_dict(checkpoint)
-    compound_encoder.eval()
-
     model_params = {
         "compound_encoder": compound_encoder,
         "n_layers": args.num_layers,
