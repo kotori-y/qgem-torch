@@ -32,8 +32,8 @@ DEVICE='cpu'
 
 SMILES_LIST=$1
 
-TOXICITY_EVAL_FROM='./outs/checkpoints/downstream_100M/toxicity-wash-3s-3/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_133.pt'
-PHYSCHEM_EVAL_FROM='./outs/checkpoints/downstream_100M/physchem-wash-2/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_98.pt'
+TOXICITY_EVAL_FROM='./outs/checkpoints/downstream_100M/toxicity-wash-3s-3/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_133_release.pt'
+PHYSCHEM_EVAL_FROM='./outs/checkpoints/downstream_100M/physchem-wash-2/gin-L3-D0.2-ELR1e-4-LR1e-3/checkpoint_98_release.pt'
 
 
 python inference.py \
