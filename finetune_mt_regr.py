@@ -183,7 +183,7 @@ def evaluate(model: DownstreamMTModel, device, loader, args):
         np.array(total_label),
         np.array(total_pred)
     )
-    return loss_accum_dict
+    return loss_accum_dict, np.array(total_label), np.array(total_pred)
 
 
 def get_label_stat(dataset):
@@ -240,6 +240,7 @@ def main(args):
     )
 
     train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
+    test_smiles = [x.smiles for x in test_dataset]
 
     if args.distributed:
         sampler_train = DistributedSampler(train_dataset)
@@ -281,11 +282,12 @@ def main(args):
         "atom_names": config["atom_names"],
         "bond_names": config["bond_names"],
         "global_reducer": 'sum',
+        "without_dihedral": args.without_dihedral,
         "device": device
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
 
-    if args.encoder_eval_from is not None:
+    if args.encoder_eval_from is not None or args.encoder_eval_from != '':
         assert os.path.exists(args.encoder_eval_from)
         checkpoint = torch.load(args.encoder_eval_from, map_location=device)["compound_encoder_state_dict"]
         compound_encoder.load_state_dict(checkpoint)
@@ -377,7 +379,7 @@ def main(args):
 
         print("Evaluating...")
         # valid_dict = evaluate(model, device, valid_loader, args)
-        test_dict = evaluate(model, device, test_loader, args)
+        test_dict, y_test, y_pred = evaluate(model, device, test_loader, args)
 
         if args.checkpoint_dir:
             print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
@@ -401,6 +403,9 @@ def main(args):
                 "model_state_dict": model_without_ddp.state_dict(),
                 "encoder_optimizer_state_dict": encoder_optimizer.state_dict() if not args.frozen_encoder else {},
                 "head_optimizer_state_dict": head_optimizer.state_dict(),
+                "test_smiles": test_smiles,
+                "y_test": y_test,
+                "y_pred": y_pred,
                 # "scheduler_state_dict": scheduler.state_dict(),
                 "args": args,
             }
@@ -460,7 +465,12 @@ def main_cli():
     parser.add_argument("--distributed", action='store_true', default=False)
     parser.add_argument("--use_mpi", action='store_true', default=False)
 
-    parser.add_argument("--dataset-name", choices=['lipo', 'esol', 'qm7', 'qm8', 'qm9'])
+    parser.add_argument("--dataset-name", choices=[
+        'lipo', 'esol', 'qm7', 'qm8', 'qm9',
+        'Boiling_Point', 'Density', 'Flash_Point', 'LogP',
+        'LogS', 'Melting_Point', 'Refractive_Index',
+        'Surface_Tension', 'Vapor_Pressure'
+    ])
     parser.add_argument("--task-endpoints-file", type=str)
     parser.add_argument("--preprocess-endpoints", action='store_true', default=False)
 
@@ -471,6 +481,7 @@ def main_cli():
     parser.add_argument("--model-ver", type=str, default='gat')
     parser.add_argument("--frozen-encoder", action='store_true', default=False)
     parser.add_argument("--enable-tb", action='store_true', default=False)
+    parser.add_argument("--without-dihedral", action='store_true', default=False)
 
     parser.add_argument("--seed", type=int, default=2024)
 

@@ -283,7 +283,7 @@ def main(args):
     if args.eval_from is not None and args.eval_from != '':
         assert os.path.exists(args.eval_from)
         checkpoint = torch.load(args.eval_from, map_location=device)["model_state_dict"]
-        model_without_ddp.load_state_dict(checkpoint)
+        model_without_ddp.load_state_dict(checkpoint, strict=not args.with_provided_3d)
         print(f"load params from {args.eval_from}")
 
     num_params = sum(p.numel() for p in model_without_ddp.parameters())

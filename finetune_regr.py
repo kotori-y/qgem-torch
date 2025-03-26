@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from datasets import EgeognnFinetuneDataset
 from models.downstream import DownstreamModel
+
 from utils import exempt_parameters, init_distributed_mode
 
 
@@ -101,9 +102,9 @@ def train(
 
     for endpoint, results in prediction_logs.items():
         loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
-        # loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
+        loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
 
-    return loss_accum_dict
+    return loss_accum_dict, prediction_logs
 
 
 def evaluate(model: DownstreamModel, device, loader, args):
@@ -177,7 +178,7 @@ def evaluate(model: DownstreamModel, device, loader, args):
         loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
         loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
 
-    return loss_accum_dict
+    return loss_accum_dict, prediction_logs
 
 
 def get_label_stat(dataset):
@@ -234,7 +235,7 @@ def main(args):
     )
 
     train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
-    test_dataset = [x for x in test_dataset if x.smiles not in args.exclude_smiles]
+    # test_dataset = [x for x in test_dataset if x.smiles not in args.exclude_smiles]
     train_smiles = [x.smiles for x in train_dataset]
     test_smiles = [x.smiles for x in test_dataset]
 
@@ -285,7 +286,8 @@ def main(args):
         "atom_names": config["atom_names"],
         "bond_names": config["bond_names"],
         "global_reducer": 'sum',
-        "device": device
+        "device": device,
+        "without_dihedral": args.without_dihedral,
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
 
@@ -377,7 +379,7 @@ def main(args):
             sampler_train.set_epoch(epoch)
 
         print("Training...")
-        train_dict = train(
+        train_dict, train_prediction_logs = train(
             model=model,
             device=device,
             loader=train_loader,
@@ -388,7 +390,7 @@ def main(args):
 
         print("Evaluating...")
         # valid_dict = evaluate(model, device, valid_loader, args)
-        test_dict = evaluate(model, device, test_loader, args)
+        test_dict, test_prediction_logs = evaluate(model, device, test_loader, args)
 
         if args.checkpoint_dir:
             print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
@@ -412,10 +414,12 @@ def main(args):
                 "epoch": epoch,
                 "compound_encoder": compound_encoder.state_dict(),
                 "model_state_dict": model_without_ddp.state_dict(),
-                "encoder_optimizer_state_dict": encoder_optimizer.state_dict() if not args.frozen_encoder else {},
-                "head_optimizer_state_dict": head_optimizer.state_dict(),
+                # "encoder_optimizer_state_dict": encoder_optimizer.state_dict() if not args.frozen_encoder else {},
+                # "head_optimizer_state_dict": head_optimizer.state_dict(),
                 "train_smiles": np.array(train_smiles),
                 "test_smiles": np.array(test_smiles),
+                "train_history": train_prediction_logs,
+                "test_history": test_prediction_logs,
                 # "scheduler_state_dict": scheduler.state_dict(),
                 "args": args,
             }
@@ -459,7 +463,7 @@ def main_cli():
 
     parser.add_argument("--checkpoint-dir", type=str, default="")
     parser.add_argument("--encoder-eval-from", type=str, default=None)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--use-adamw", action='store_true', default=False)
 
@@ -484,6 +488,7 @@ def main_cli():
     parser.add_argument("--model-ver", type=str, default='gat')
     parser.add_argument("--frozen-encoder", action='store_true', default=False)
     parser.add_argument("--enable-tb", action='store_true', default=False)
+    parser.add_argument("--without-dihedral", action='store_true', default=False)
 
     parser.add_argument("--seed", type=int, default=2024)
 

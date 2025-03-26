@@ -21,8 +21,12 @@ _REDUCER_NAMES = {
 
 
 class EGeoGNNModel(nn.Module):
-    def __init__(self, latent_size, encoder_dropout, n_layers, atom_names, bond_names, device, **kwargs):
+    def __init__(
+            self, latent_size, encoder_dropout, n_layers, atom_names, bond_names, device,
+            without_dihedral=False, **kwargs
+    ):
         super(EGeoGNNModel, self).__init__()
+        self.without_dihedral = without_dihedral
 
         self.latent_size = latent_size
         self.dropout_rate = encoder_dropout
@@ -39,11 +43,13 @@ class EGeoGNNModel(nn.Module):
         self.bond_embedding_list = nn.ModuleList()
         self.bond_float_rbf_list = nn.ModuleList()
         self.bond_angle_float_rbf_list = nn.ModuleList()
-        self.dihedral_angle_float_rbf_list = nn.ModuleList()
+        if not self.without_dihedral:
+            self.dihedral_angle_float_rbf_list = nn.ModuleList()
 
         self.atom_bond_block_list = nn.ModuleList()
         self.bond_angle_block_list = nn.ModuleList()
-        self.angle_dihedral_block_list = nn.ModuleList()
+        if not self.without_dihedral:
+            self.angle_dihedral_block_list = nn.ModuleList()
 
         for layer_id in range(self.n_layers):
             self.bond_embedding_list.append(
@@ -55,18 +61,20 @@ class EGeoGNNModel(nn.Module):
             self.bond_angle_float_rbf_list.append(
                 BondAngleFloatRBF(self.latent_size, device=device)
             )
-            self.dihedral_angle_float_rbf_list.append(
-                DihedralAngleFloatRBF(self.latent_size, device=device)
-            )
+            if not self.without_dihedral:
+                self.dihedral_angle_float_rbf_list.append(
+                    DihedralAngleFloatRBF(self.latent_size, device=device)
+                )
             self.atom_bond_block_list.append(
                 EGeoGNNBlock(self.latent_size, self.dropout_rate, last_act=(layer_id != self.n_layers - 1))
             )
             self.bond_angle_block_list.append(
                 EGeoGNNBlock(self.latent_size, self.dropout_rate, last_act=(layer_id != self.n_layers - 1))
             )
-            self.angle_dihedral_block_list.append(
-                EGeoGNNBlock(self.latent_size, self.dropout_rate, last_act=(layer_id != self.n_layers - 1))
-            )
+            if not self.without_dihedral:
+                self.angle_dihedral_block_list.append(
+                    EGeoGNNBlock(self.latent_size, self.dropout_rate, last_act=(layer_id != self.n_layers - 1))
+                )
 
     @property
     def node_dim(self):
@@ -125,6 +133,41 @@ class EGeoGNNModel(nn.Module):
         node_hidden = self.init_atom_embedding(x)
         bond_embed = self.init_bond_embedding(bond_attr)
         bond_hidden = bond_embed + self.init_bond_float_rbf(bond_lengths)
+
+        if self.without_dihedral:
+            node_hidden_list = [node_hidden]
+            edge_hidden_list = [bond_hidden]
+
+            graph_idx = torch.arange(num_graphs).to(x.device)
+            bond_batch = torch.repeat_interleave(graph_idx, num_bonds, dim=0)
+
+            for layer_id in range(self.n_layers):
+                node_hidden = self.atom_bond_block_list[layer_id](
+                    node_hidden=node_hidden_list[layer_id],
+                    edge_hidden=edge_hidden_list[layer_id],
+                    edge_index=AtomBondGraph_edges,
+                    node_batches=atom_batch
+                )
+
+                cur_edge_hidden = self.bond_embedding_list[layer_id](bond_attr)
+                cur_edge_hidden = cur_edge_hidden + self.bond_float_rbf_list[layer_id](bond_lengths)
+                cur_angle_hidden = self.bond_angle_float_rbf_list[layer_id](bond_angles)
+                edge_hidden = self.bond_angle_block_list[layer_id](
+                    node_hidden=cur_edge_hidden,
+                    edge_hidden=cur_angle_hidden,
+                    edge_index=BondAngleGraph_edges,
+                    node_batches=bond_batch
+                )
+
+                node_hidden_list.append(node_hidden)
+                edge_hidden_list.append(edge_hidden)
+
+            node_repr = node_hidden_list[-1]
+            edge_repr = edge_hidden_list[-1]
+            graph_repr = global_mean_pool(node_repr, atom_batch, size=num_graphs)
+
+            return node_repr, edge_repr, None, None, graph_repr
+
         angle_hidden = self.init_bond_angle_float_rbf(bond_angles)
 
         node_hidden_list = [node_hidden]
