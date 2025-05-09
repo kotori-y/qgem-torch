@@ -101,12 +101,15 @@ def train(model: DownstreamMTModel, device, loader, encoder_opt, head_opt, args)
     for k in loss_accum_dict.keys():
         loss_accum_dict[k] /= counter[k]
 
-    metric_func = calc_rmse if args.metric == "rmse" else calc_mae
+    y_true = np.array(prediction_logs["y_true"]).reshape(-1, len(args.endpoints))
+    y_pred = np.array(prediction_logs["y_pred"]).reshape(-1, len(args.endpoints))
+    mask = ~np.isnan(y_true)
 
-    loss_accum_dict[f"{args.dataset_name}_{args.metric}"] = metric_func(
-        np.array(prediction_logs["y_true"]),
-        np.array(prediction_logs["y_pred"])
-    )
+    for _y_true, _y_pred, _mask, endpoint in zip(y_true.T, y_pred.T, mask.T, args.endpoints):
+        loss_accum_dict[f"{endpoint}_r2"] = r2_score(_y_true[_mask], _y_pred[_mask])
+        loss_accum_dict[f"{endpoint}_mae"] = mean_absolute_error(_y_true[_mask], _y_pred[_mask])
+        loss_accum_dict[f"{endpoint}_rmse"] = mean_squared_error(_y_true[_mask], _y_pred[_mask]) ** 0.5
+
     return loss_accum_dict
 
 
@@ -174,15 +177,18 @@ def evaluate(model: DownstreamMTModel, device, loader, args):
     for k in loss_accum_dict.keys():
         loss_accum_dict[k] /= counter[k]
 
-    total_pred = np.concatenate(total_pred, 0)
-    total_label = np.concatenate(total_label, 0)
+    total_pred = np.array(np.concatenate(total_pred, 0))
+    total_label = np.array(np.concatenate(total_label, 0))
 
-    metric_func = calc_rmse if args.metric == "rmse" else calc_mae
+    y_true = np.array(total_label).reshape(-1, len(args.endpoints))
+    y_pred = np.array(total_pred).reshape(-1, len(args.endpoints))
+    mask = ~np.isnan(y_true)
 
-    loss_accum_dict[f"{args.dataset_name}_{args.metric}"] = metric_func(
-        np.array(total_label),
-        np.array(total_pred)
-    )
+    for _y_true, _y_pred, _mask, endpoint in zip(y_true.T, y_pred.T, mask.T, args.endpoints):
+        loss_accum_dict[f"{endpoint}_r2"] = r2_score(_y_true[_mask], _y_pred[_mask])
+        loss_accum_dict[f"{endpoint}_mae"] = mean_absolute_error(_y_true[_mask], _y_pred[_mask])
+        loss_accum_dict[f"{endpoint}_rmse"] = mean_squared_error(_y_true[_mask], _y_pred[_mask]) ** 0.5
+
     return loss_accum_dict, np.array(total_label), np.array(total_pred)
 
 
@@ -287,7 +293,7 @@ def main(args):
     }
     compound_encoder = EGeoGNNModel(**encoder_params)
 
-    if args.encoder_eval_from is not None or args.encoder_eval_from != '':
+    if args.encoder_eval_from is not None and args.encoder_eval_from != '':
         assert os.path.exists(args.encoder_eval_from)
         checkpoint = torch.load(args.encoder_eval_from, map_location=device)["compound_encoder_state_dict"]
         compound_encoder.load_state_dict(checkpoint)
@@ -465,12 +471,7 @@ def main_cli():
     parser.add_argument("--distributed", action='store_true', default=False)
     parser.add_argument("--use_mpi", action='store_true', default=False)
 
-    parser.add_argument("--dataset-name", choices=[
-        'lipo', 'esol', 'qm7', 'qm8', 'qm9',
-        'Boiling_Point', 'Density', 'Flash_Point', 'LogP',
-        'LogS', 'Melting_Point', 'Refractive_Index',
-        'Surface_Tension', 'Vapor_Pressure'
-    ])
+    parser.add_argument("--dataset-name", type=str)
     parser.add_argument("--task-endpoints-file", type=str)
     parser.add_argument("--preprocess-endpoints", action='store_true', default=False)
 
