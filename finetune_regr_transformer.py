@@ -1,6 +1,7 @@
 import argparse
 import io
 import json
+import math
 import os
 import random
 from collections import defaultdict
@@ -18,16 +19,18 @@ from tqdm import tqdm
 from datasets import EgeognnFinetuneDataset
 # from models.downstream import DownstreamModel
 from models.downstream import DownstreamTransformerModel
-
 from utils import exempt_parameters, init_distributed_mode
 
 
 def train(
         model: DownstreamTransformerModel, device, loader,
         encoder_opt, head_opt,
-        args
+        args, endpoint_status=None
 ):
     model.train()
+
+    if endpoint_status is None:
+        endpoint_status = {}
 
     loss_accum_dict = defaultdict(float)
     counter = {}
@@ -37,8 +40,17 @@ def train(
 
     for step, batch in enumerate(pbar):
         tgt_endpoints = torch.tensor(
-                [args.endpoints.index(x) for x in batch.endpoint]
-            ).reshape(-1, 1).to(device).int()
+            [args.endpoints.index(x) for x in batch.endpoint]
+        ).reshape(-1, 1).to(device).int()
+
+        gamma = torch.tensor(
+            [
+                -math.log10(endpoint_status[x]['sample'])
+                if x in endpoint_status else
+                1
+                for x in batch.endpoint
+            ]
+        ).mean()
 
         input_params = {
             "AtomBondGraph_edges": batch.AtomBondGraph_edges.to(device),
@@ -75,9 +87,11 @@ def train(
         label_std = label_std.to(device).unsqueeze(1)
 
         if args.distributed:
-            loss, loss_dict = model.module.compute_loss(pred_scaled, label_scaled, endpoint_proba, tgt_endpoints)
+            loss, loss_dict = model.module.compute_loss(
+                pred_scaled, label_scaled, endpoint_proba, tgt_endpoints, gamma=gamma
+            )
         else:
-            loss, loss_dict = model.compute_loss(pred_scaled, label_scaled, endpoint_proba, tgt_endpoints)
+            loss, loss_dict = model.compute_loss(pred_scaled, label_scaled, endpoint_proba, tgt_endpoints, gamma=gamma)
 
         loss.backward()
 
@@ -180,7 +194,6 @@ def evaluate(model: DownstreamTransformerModel, device, loader, args):
             pbar.set_description(description)
 
     for k in loss_accum_dict.keys():
-
         loss_accum_dict[k] /= counter[k]
 
     for endpoint, results in prediction_logs.items():
@@ -206,8 +219,14 @@ def main(args):
     random.seed(args.seed)
 
     device = torch.device(args.device)
-    with open(args.config_path) as f:
+
+    with open(args.model_config_path) as f:
         config = json.load(f)
+
+    endpoint_status = {}
+    if args.endpoint_status_file is not None and args.endpoint_status_file != '':
+        with open(args.endpoint_status_file) as f:
+            endpoint_status = json.load(f)
 
     dataset = EgeognnFinetuneDataset(
         remove_hs=args.remove_hs,
@@ -396,7 +415,8 @@ def main(args):
             loader=train_loader,
             encoder_opt=encoder_optimizer,
             head_opt=head_optimizer,
-            args=args
+            args=args,
+            endpoint_status=endpoint_status
         )
 
         print("Evaluating...")
@@ -463,7 +483,8 @@ def main_cli():
 
     parser.add_argument("--task-type", type=str)
 
-    parser.add_argument("--config-path", type=str)
+    parser.add_argument("--model-config-path", type=str)
+    parser.add_argument("--endpoint-status-file", type=str, default=None)
     parser.add_argument("--dataset-base-path", type=str)
 
     parser.add_argument("--remove-hs", action='store_true', default=False)
