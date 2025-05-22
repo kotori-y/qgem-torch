@@ -1,0 +1,18 @@
+{
+  "Melting_Point": {
+    "num": 120611,
+    "sample": 0.5098192547003922
+  },
+  "Density": {
+    "num": 107538,
+    "sample": 0.45456005681049644
+  },
+  "Decomposition": {
+    "num": 6390,
+    "sample": 0.027010347626132827
+  },
+  "Heat_of_Combustion": {
+    "num": 2037,
+    "sample": 0.008610340862978494
+  }
+}

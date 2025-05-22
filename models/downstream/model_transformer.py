@@ -122,12 +122,12 @@ class DownstreamTransformerModel(nn.Module):
 
         return pred, proba
 
-    def compute_loss(self, pred, target, proba, tgt_endpoints):
+    def compute_loss(self, pred, target, proba, tgt_endpoints, endpoint_weight=0.8, gamma=1):
         loss_dict = {}
 
         value_loss = self.loss_func(pred, target)
         endpoint_loss = self.endpoint_loss_func(proba, tgt_endpoints.squeeze(1).to(torch.int64))
-        loss = value_loss + endpoint_loss
+        loss = value_loss + endpoint_loss * endpoint_weight * gamma
 
         loss_dict['value_loss'] = value_loss.detach().item()
         loss_dict['endpoint_loss'] = endpoint_loss.detach().item()
