@@ -41,6 +41,16 @@ class DownstreamTransformerModel(nn.Module):
             dropout=dropout_rate
         )
 
+        self.endpoint_layer = MLP(
+            input_size=compound_encoder.latent_size,
+            output_sizes=[hidden_size] * n_layers + [len(self.endpoints)],
+            use_layer_norm=False,
+            activation=nn.ReLU,
+            layernorm_before=False,
+            use_bn=False,
+            dropout=dropout_rate
+        )
+
         self.compound_encoder = compound_encoder
 
         self.graph_feat_norm = nn.LayerNorm(self.latent_size)
@@ -55,6 +65,9 @@ class DownstreamTransformerModel(nn.Module):
 
         self.loss_func = nn.MSELoss()
 
+        self.endpoint_act = nn.Softmax(dim=1)
+        self.endpoint_loss_func = nn.CrossEntropyLoss()
+
     def forward(
             self,
             AtomBondGraph_edges, BondAngleGraph_edges, AngleDihedralGraph_edges,
@@ -63,8 +76,8 @@ class DownstreamTransformerModel(nn.Module):
             tgt_endpoints
     ):
 
-        endpoint_index = torch.tensor([self.endpoints.index(x) for x in tgt_endpoints]).reshape(-1, 1).to(self.device)
-        endpoint_embedding = self.endpoint_embedding(endpoint_index.int())
+        # endpoint_index = torch.tensor([self.endpoints.index(x) for x in tgt_endpoints]).reshape(-1, 1).to(self.device)
+        endpoint_embedding = self.endpoint_embedding(tgt_endpoints)
 
         if self.frozen_encoder:
             self.compound_encoder.eval()
@@ -102,15 +115,22 @@ class DownstreamTransformerModel(nn.Module):
         graph_repr = self.endpoint_attn_layer_norm(graph_repr + self.dropout(_graph_repr)).squeeze(1)
 
         pred = self.downstream_layer(graph_repr)
+        proba = self.endpoint_act(self.endpoint_layer(graph_repr))
 
         if self.task_type == 'class':
             pred = self.out_act(pred)
-        return pred
 
-    def compute_loss(self, pred, target):
+        return pred, proba
+
+    def compute_loss(self, pred, target, proba, tgt_endpoints):
         loss_dict = {}
 
-        loss = self.loss_func(pred, target)
+        value_loss = self.loss_func(pred, target)
+        endpoint_loss = self.endpoint_loss_func(proba, tgt_endpoints.squeeze(1).to(torch.int64))
+        loss = value_loss + endpoint_loss
+
+        loss_dict['value_loss'] = value_loss.detach().item()
+        loss_dict['endpoint_loss'] = endpoint_loss.detach().item()
         loss_dict['loss'] = loss.detach().item()
 
         return loss, loss_dict
