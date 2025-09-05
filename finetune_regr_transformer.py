@@ -250,14 +250,13 @@ def main(args):
     ]
 
     total_size = len(dataset)
-    train_size = int(total_size * 0.8)
+    train_size = int(total_size * 0.8) if not args.train_all else total_size
     # valid_size = (total_size - train_size) // 2
     test_size = total_size - train_size
 
     print(
         {
             "train": train_size,
-            # "valid": valid_size,
             "test": test_size
         }
     )
@@ -282,19 +281,13 @@ def main(args):
         batch_sampler=batch_sampler_train,
     )
 
-    # valid_loader = DataLoader(
-    #     valid_dataset,
-    #     batch_size=args.batch_size * 2,
-    #     shuffle=False,
-    #     num_workers=args.num_workers
-    # )
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size * 2,
-        shuffle=False,
-        num_workers=args.num_workers
-    )
+    if not args.train_all:
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            num_workers=args.num_workers
+        )
 
     if args.model_ver == 'gat':
         from models.gat import EGeoGNNModel
@@ -419,16 +412,18 @@ def main(args):
             endpoint_status=endpoint_status
         )
 
-        print("Evaluating...")
-        # valid_dict = evaluate(model, device, valid_loader, args)
-        test_dict, test_prediction_logs = evaluate(model, device, test_loader, args)
+        test_dict = {}
+        test_prediction_logs = {}
+        if not args.train_all:
+            print("Evaluating...")
+            # valid_dict = evaluate(model, device, valid_loader, args)
+            test_dict, test_prediction_logs = evaluate(model, device, test_loader, args)
 
         if args.checkpoint_dir:
             print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
 
         train_pref = train_dict['loss']
-        # valid_pref = valid_dict['loss']
-        test_pref = test_dict['loss']
+        test_pref = test_dict.get('loss', None)
 
         train_curve.append(train_pref)
         # valid_curve.append(valid_pref)
@@ -449,8 +444,8 @@ def main(args):
                 # "head_optimizer_state_dict": head_optimizer.state_dict(),
                 # "train_smiles": np.array(train_smiles),
                 # "test_smiles": np.array(test_smiles),
-                "train_history": train_prediction_logs,
-                "test_history": test_prediction_logs,
+                "train_history": train_prediction_logs if not args.train_all else np.array([]),
+                "test_history": test_prediction_logs if not args.train_all else np.array([]),
                 # "scheduler_state_dict": scheduler.state_dict(),
             }
             torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
@@ -462,7 +457,7 @@ def main(args):
             }
             torch.save(detail, os.path.join(args.checkpoint_dir, f"checkpoint_training_detail.pt"))
 
-            if args.enable_tb:
+            if args.enable_tb and not args.train_all:
                 tb_writer = SummaryWriter(args.checkpoint_dir)
                 tb_writer.add_scalar("loss/train", train_pref, epoch)
                 tb_writer.add_scalar("loss/test", test_pref, epoch)
@@ -528,6 +523,8 @@ def main_cli():
     parser.add_argument("--frozen-encoder", action='store_true', default=False)
     parser.add_argument("--enable-tb", action='store_true', default=False)
     parser.add_argument("--without-dihedral", action='store_true', default=False)
+
+    parser.add_argument("--train-all", action='store_true', default=False)
 
     parser.add_argument("--seed", type=int, default=2024)
 

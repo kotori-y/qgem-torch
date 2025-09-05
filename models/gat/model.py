@@ -216,6 +216,66 @@ class EGEM(nn.Module):
             )
             self.Adc_loss = nn.CrossEntropyLoss()
 
+        # cm5 charges with regression
+        if 'CM5' in pretrain_tasks:
+            self.cm5_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.cm5_loss = nn.SmoothL1Loss()
+
+        # espc charges with regression
+        if 'ESPC' in pretrain_tasks:
+            self.espc_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.espc_loss = nn.SmoothL1Loss()
+
+        # hirshfeld charges with regression
+        if 'HIRSHFELD' in pretrain_tasks:
+            self.hirshfeld_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.hirshfeld_loss = nn.SmoothL1Loss()
+
+        # npa charges with regression
+        if 'NPA' in pretrain_tasks:
+            self.npa_mlp = MLP(
+                input_size=compound_encoder.latent_size,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.npa_loss = nn.SmoothL1Loss()
+
+        # bond wiberg order with regression
+        if 'WIBERG' in pretrain_tasks:
+            self.wiberg_mlp = MLP(
+                input_size=compound_encoder.latent_size * 2,
+                output_sizes=[hidden_size] * n_layers + [1],
+                use_layer_norm=use_layer_norm,
+                use_bn=use_bn,
+                activation=nn.ReLU,
+                dropout=dropout_rate
+            )
+            self.wiberg_loss = nn.SmoothL1Loss()
+
     def _get_Blr_loss(self, atom_attr, bond_lengths, AtomBondGraph_edges, masked_bond_indices=None):
         masked_atom_i, masked_atom_j = AtomBondGraph_edges.index_select(1, masked_bond_indices)
         atom_attr_i = atom_attr.index_select(0, masked_atom_i)

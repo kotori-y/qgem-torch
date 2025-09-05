@@ -26,6 +26,7 @@ def inference(model: DownstreamTransformerModel, device, loader, endpoints):
     smiles = []
 
     for step, batch in enumerate(loader):
+        tgt_endpoints = torch.tensor(range(len(endpoints))).int().reshape(-1, 1)
         input_params = {
             "AtomBondGraph_edges": batch.AtomBondGraph_edges.to(device),
             "BondAngleGraph_edges": batch.BondAngleGraph_edges.to(device),
@@ -41,15 +42,15 @@ def inference(model: DownstreamTransformerModel, device, loader, endpoints):
             "num_bonds": batch.n_bonds.to(device),
             "num_angles": batch.n_angles.to(device),
             "atom_batch": batch.batch.to(device),
-            "tgt_endpoints": endpoints
+            "tgt_endpoints": tgt_endpoints
         }
 
         with torch.no_grad():
-            pred_scaled = model(**input_params)
+            pred_scaled, _ = model(**input_params)
             results.append(pred_scaled.detach().cpu().numpy().flatten())
             smiles = [*smiles, *batch.smiles]
 
-    results = np.hstack(results).reshape(-1, 4)
+    results = np.hstack(results).reshape(-1, len(endpoints))
     return results, smiles
 
 
@@ -60,10 +61,10 @@ def main(args):
     random.seed(args.seed)
 
     device = torch.device(args.device)
-    with open(args.config_path) as f:
+    with open(args.model_config_path) as f:
         config = json.load(f)
 
-    with open(args.statuses_path) as f:
+    with open(args.endpoint_status_file) as f:
         endpoint_statuses = json.load(f)
 
     dataset = EgeognnInferenceDataset(
@@ -152,8 +153,8 @@ def main_cli():
 
     parser.add_argument("--task-type", type=str)
 
-    parser.add_argument("--config-path", type=str)
-    parser.add_argument("--statuses-path", type=str)
+    parser.add_argument("--model-config-path", type=str)
+    parser.add_argument("--endpoint-status-file", type=str, default=None)
     parser.add_argument("--out-file", type=str)
 
     # parser.add_argument("--smiles-list", type=str, nargs="+")

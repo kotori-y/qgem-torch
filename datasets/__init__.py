@@ -357,6 +357,8 @@ class EgeognnFinetuneDataset(TorchDataset):
                 batch_file_path = os.path.join(self.processed_dir, file)
                 loaded_data = torch.load(batch_file_path)
                 self.loaded_batches.extend(loaded_data)
+
+            random.shuffle(self.loaded_batches)
             return
 
         curr_index = 0
@@ -595,7 +597,7 @@ class EgeognnFinetuneMTDataset(TorchDataset):
 
         curr_index = 0
         for input_file in Path(base_path).glob('*.csv'):
-            df = pd.read_csv(input_file, nrows=[None, 10][self.dev])
+            df = pd.read_csv(input_file, nrows=[None, 100][self.dev])
 
             if self.preprocess_endpoints:
                 for endpoint in self.endpoints:
@@ -620,8 +622,8 @@ class EgeognnFinetuneMTDataset(TorchDataset):
                     self.mol_list.append(mol)
 
                     label = _label_list[i]
-                    label_mean = _label_list.mean(axis=0)
-                    label_std = _label_list.std(axis=0) + 1e-5
+                    label_mean = np.nanmean(_label_list, axis=0)
+                    label_std = np.nanstd(_label_list, axis=0) + 1e-5
 
                     self.label_list.append((label - label_mean) / label_std)
                     self.mean_list.append(label_mean)
@@ -800,6 +802,8 @@ class EgeognnInferenceDataset(TorchDataset):
 
         self.smiles_list = smiles_list
         self.mol_list = [self.load_smiles(smiles) for smiles in self.smiles_list]
+        self.mol_list = [x for x in self.mol_list if x]
+
         self.data_list = self.process_egeognn_finetune()
         super().__init__()
 
