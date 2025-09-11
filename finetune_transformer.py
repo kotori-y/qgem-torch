@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import r2_score, mean_squared_error, accuracy_score
 from torch import optim
 from torch.utils.data import DistributedSampler, random_split
 from torch.utils.tensorboard import SummaryWriter
@@ -100,6 +100,8 @@ def train(
 
         label = label_scaled * label_std + label_mean
         pred = pred_scaled * label_std + label_mean
+        if args.task_type == "classification":
+            pred = pred.argmax(dim=1, keepdim=True)
 
         for i, endpoint in enumerate(batch.endpoint):
             if endpoint not in prediction_logs:
@@ -119,8 +121,11 @@ def train(
         loss_accum_dict[k] /= counter[k]
 
     for endpoint, results in prediction_logs.items():
-        loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
-        loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
+        if args.task_type == "regression":
+            loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
+            loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
+        else:
+            loss_accum_dict[f"{endpoint}_acc"] = accuracy_score(results['y_true'], results['y_pred'])
 
     return loss_accum_dict, prediction_logs
 
@@ -177,6 +182,8 @@ def evaluate(model: DownstreamTransformerModel, device, loader, args):
 
         label = (label_scaled * label_std) + label_mean
         pred = (pred_scaled * label_std) + label_mean
+        if args.task_type == "classification":
+            pred = pred.argmax(dim=1, keepdim=True)
 
         for i, endpoint in enumerate(batch.endpoint):
             if endpoint not in prediction_logs:
@@ -196,8 +203,11 @@ def evaluate(model: DownstreamTransformerModel, device, loader, args):
         loss_accum_dict[k] /= counter[k]
 
     for endpoint, results in prediction_logs.items():
-        loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
-        loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
+        if args.task_type == "regression":
+            loss_accum_dict[f"{endpoint}_r2"] = r2_score(results['y_true'], results['y_pred'])
+            loss_accum_dict[f"{endpoint}_mse"] = mean_squared_error(results['y_true'], results['y_pred'])
+        else:
+            loss_accum_dict[f"{endpoint}_acc"] = accuracy_score(results['y_true'], results['y_pred'])
 
     return loss_accum_dict, prediction_logs
 
@@ -236,7 +246,8 @@ def main(args):
         endpoints=args.endpoints,
         use_mpi=args.use_mpi,
         force_generate=args.dataset,
-        preprocess_endpoints=args.preprocess_endpoints
+        preprocess_endpoints=args.preprocess_endpoints,
+        task_type=args.task_type
     )
 
     if args.dataset:
@@ -244,13 +255,12 @@ def main(args):
 
     args.endpoints = [
         endpoint
-        if endpoint not in args.preprocess_endpoints else f"log10_{endpoint}"
+        if (endpoint not in args.preprocess_endpoints or args.task_type == "classification") else f"log10_{endpoint}"
         for endpoint in args.endpoints
     ]
 
     total_size = len(dataset)
     train_size = int(total_size * 0.8) if not args.train_all else total_size
-    # valid_size = (total_size - train_size) // 2
     test_size = total_size - train_size
 
     print(
@@ -261,7 +271,6 @@ def main(args):
     )
 
     train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
-    # test_dataset = [x for x in test_dataset if x.smiles not in args.exclude_smiles]
     train_smiles = [x.smiles for x in train_dataset]
     test_smiles = [x.smiles for x in test_dataset]
 
@@ -325,6 +334,7 @@ def main(args):
         "task_type": args.task_type,
         "endpoints": args.endpoints,
         "frozen_encoder": args.frozen_encoder,
+        "n_labels": args.n_labels,
         "device": device
     }
     model = DownstreamTransformerModel(**model_params).to(device)
@@ -384,14 +394,7 @@ def main(args):
             weight_decay=args.weight_decay,
         )
 
-    # if not args.lr_warmup:
-    #     scheduler = LambdaLR(optimizer, lambda x: 1.0)
-    # else:
-    #     lrscheduler = WarmCosine(tmax=len(train_loader) * args.period, warmup=int(4e3))
-    #     scheduler = LambdaLR(optimizer, lambda x: lrscheduler.step(x))
-
     train_curve = []
-    # valid_curve = []
     test_curve = []
 
     for epoch in range(1, args.epochs + 1):
@@ -415,7 +418,6 @@ def main(args):
         test_prediction_logs = {}
         if not args.train_all:
             print("Evaluating...")
-            # valid_dict = evaluate(model, device, valid_loader, args)
             test_dict, test_prediction_logs = evaluate(model, device, test_loader, args)
 
         if args.checkpoint_dir:
@@ -425,7 +427,6 @@ def main(args):
         test_pref = test_dict.get('loss', None)
 
         train_curve.append(train_pref)
-        # valid_curve.append(valid_pref)
         test_curve.append(test_pref)
 
         if args.checkpoint_dir:
@@ -439,13 +440,8 @@ def main(args):
                 "epoch": epoch,
                 "compound_encoder": compound_encoder.state_dict(),
                 "model_state_dict": model_without_ddp.state_dict(),
-                # "encoder_optimizer_state_dict": encoder_optimizer.state_dict() if not args.frozen_encoder else {},
-                # "head_optimizer_state_dict": head_optimizer.state_dict(),
-                # "train_smiles": np.array(train_smiles),
-                # "test_smiles": np.array(test_smiles),
                 "train_history": train_prediction_logs if not args.train_all else np.array([]),
                 "test_history": test_prediction_logs if not args.train_all else np.array([]),
-                # "scheduler_state_dict": scheduler.state_dict(),
             }
             torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
 
@@ -467,6 +463,8 @@ def main(args):
                         continue
                     if "mse" in k:
                         tb_writer.add_scalar(f"mse/{k}", v, epoch)
+                    if "_acc" in k:
+                        tb_writer.add_scalar(f"acc/{k}", v, epoch)
 
 
 def main_cli():
@@ -489,6 +487,7 @@ def main_cli():
     parser.add_argument("--dropnode-rate", type=float, default=0.1)
     parser.add_argument("--encoder-dropout", type=float, default=0.1)
     parser.add_argument("--num-message-passing-steps", type=int, default=2)
+    parser.add_argument("--n-labels", type=int, default=2)
 
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--num-layers", type=int, default=4)
@@ -528,6 +527,7 @@ def main_cli():
     parser.add_argument("--seed", type=int, default=2024)
 
     args = parser.parse_args()
+    assert args.task_type in ['regression', 'classification']
     print(args)
 
     init_distributed_mode(args)

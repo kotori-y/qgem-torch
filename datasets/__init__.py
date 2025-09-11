@@ -319,8 +319,11 @@ class EgeognnFinetuneDataset(TorchDataset):
             atom_names, bond_names,
             remove_hs=False, dev=False,
             use_mpi=False, force_generate=False,
-            preprocess_endpoints=None
+            preprocess_endpoints=None, task_type='regression'
     ):
+        assert task_type in ['regression', 'classification']
+        self.task_type = task_type
+
         if preprocess_endpoints is None:
             preprocess_endpoints = []
 
@@ -390,8 +393,8 @@ class EgeognnFinetuneDataset(TorchDataset):
                     self.mol_list.append(mol)
 
                     label = _label_list[i]
-                    label_mean = _label_list.mean()
-                    label_std = _label_list.std() + 1e-5
+                    label_mean = _label_list.mean() if self.task_type == 'regression' else 0
+                    label_std = _label_list.std() + 1e-5 if self.task_type == 'regression' else 1
                     self.label_list.append(
                         [
                             (label - label_mean) / label_std,

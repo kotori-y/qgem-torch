@@ -12,11 +12,18 @@ class DownstreamTransformerModel(nn.Module):
             self, compound_encoder: EGeoGNNModel,
             hidden_size, dropout_rate, n_layers,
             endpoints, frozen_encoder, device,
-            task_type='regression',
+            task_type='regression', n_labels=2,
             inference=False
     ):
         super(DownstreamTransformerModel, self).__init__()
+
+        assert task_type in ['regression', 'classification']
+        if task_type == "classification":
+            assert n_labels >= 2
+
         self.task_type = task_type
+        self.n_labels = n_labels
+
         self.endpoints = endpoints
         self.frozen_encoder = frozen_encoder
         self.latent_size = compound_encoder.latent_size
@@ -33,7 +40,7 @@ class DownstreamTransformerModel(nn.Module):
 
         self.downstream_layer = MLP(
             input_size=compound_encoder.latent_size,
-            output_sizes=[hidden_size] * n_layers + [1],
+            output_sizes=[hidden_size] * n_layers + [1 if self.task_type == 'regression' else n_labels],
             use_layer_norm=False,
             activation=nn.ReLU,
             layernorm_before=False,
@@ -57,15 +64,12 @@ class DownstreamTransformerModel(nn.Module):
         self.endpoint_attn_layer_norm = nn.LayerNorm(self.latent_size)
         self.dropout = nn.Dropout(dropout_rate)
 
-        if self.task_type == 'class':
-            self.out_act = nn.Sigmoid()
-
         self.inference = inference
         self.device = device
 
-        self.loss_func = nn.MSELoss()
+        self.loss_func = nn.MSELoss() if self.task_type == 'regression' else nn.CrossEntropyLoss()
+        self.softmax = nn.Softmax(dim=1)
 
-        self.endpoint_act = nn.Softmax(dim=1)
         self.endpoint_loss_func = nn.CrossEntropyLoss()
 
     def forward(
@@ -115,17 +119,21 @@ class DownstreamTransformerModel(nn.Module):
         graph_repr = self.endpoint_attn_layer_norm(graph_repr + self.dropout(_graph_repr)).squeeze(1)
 
         pred = self.downstream_layer(graph_repr)
-        proba = self.endpoint_act(self.endpoint_layer(graph_repr))
+        proba = self.endpoint_layer(graph_repr)
 
-        if self.task_type == 'class':
-            pred = self.out_act(pred)
+        if self.inference:
+            if self.task_type == 'classification':
+                pred = self.softmax(pred)
+            proba = self.softmax(proba)
 
         return pred, proba
 
     def compute_loss(self, pred, target, proba, tgt_endpoints, endpoint_weight=0.8, gamma=1):
         loss_dict = {}
 
-        value_loss = self.loss_func(pred, target)
+        value_loss = self.loss_func(pred, target) if self.task_type == "regression" \
+            else self.loss_func(pred, target.squeeze(1).to(torch.int64))
+
         endpoint_loss = self.endpoint_loss_func(proba, tgt_endpoints.squeeze(1).to(torch.int64))
         loss = value_loss + endpoint_loss * endpoint_weight * gamma
 

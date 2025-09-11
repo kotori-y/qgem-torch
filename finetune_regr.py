@@ -331,6 +331,7 @@ def main(args):
 
     encoder_params = list(compound_encoder.parameters())
     head_params = exempt_parameters(model_without_ddp.parameters(), encoder_params)
+
     if args.frozen_encoder:
         for params in encoder_params:
             params.requires_grad = False

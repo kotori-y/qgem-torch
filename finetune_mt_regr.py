@@ -235,7 +235,7 @@ def main(args):
         args.endpoints = [f"log10_{endpoint}" for endpoint in args.endpoints]
 
     total_size = len(dataset)
-    train_size = int(total_size * 0.8)
+    train_size = int(total_size * 0.8) if not args.train_all else total_size
     test_size = total_size - train_size
 
     print(
@@ -263,12 +263,13 @@ def main(args):
         batch_sampler=batch_sampler_train,
     )
 
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size * 2,
-        shuffle=False,
-        num_workers=args.num_workers
-    )
+    if not args.train_all:
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            num_workers=args.num_workers
+        )
 
     if args.model_ver == 'gat':
         from models.gat import EGeoGNNModel
@@ -383,15 +384,18 @@ def main(args):
             args=args
         )
 
-        print("Evaluating...")
-        # valid_dict = evaluate(model, device, valid_loader, args)
-        test_dict, y_test, y_pred = evaluate(model, device, test_loader, args)
+        test_dict = {}
+        test_prediction_logs = {}
+        if not args.train_all:
+            print("Evaluating...")
+            # valid_dict = evaluate(model, device, valid_loader, args)
+            test_dict, y_test, y_pred = evaluate(model, device, test_loader, args)
 
         if args.checkpoint_dir:
             print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
 
         train_pref = train_dict['loss']
-        test_pref = test_dict['loss']
+        test_pref = test_dict.get('loss', None)
 
         train_curve.append(train_pref)
         test_curve.append(test_pref)
@@ -410,8 +414,8 @@ def main(args):
                 "encoder_optimizer_state_dict": encoder_optimizer.state_dict() if not args.frozen_encoder else {},
                 "head_optimizer_state_dict": head_optimizer.state_dict(),
                 "test_smiles": test_smiles,
-                "y_test": y_test,
-                "y_pred": y_pred,
+                "y_test": y_test if not args.train_all else np.array([]),
+                "y_pred": y_pred if not args.train_all else np.array([]),
                 # "scheduler_state_dict": scheduler.state_dict(),
                 "args": args,
             }
@@ -419,16 +423,17 @@ def main(args):
             if args.enable_tb:
                 tb_writer = SummaryWriter(args.checkpoint_dir)
                 tb_writer.add_scalar("loss/train", train_pref, epoch)
-                tb_writer.add_scalar("loss/test", test_pref, epoch)
 
-                for k, v in test_dict.items():
-                    if "r2" in k:
-                        tb_writer.add_scalar(f"r2_score/{k}", v, epoch)
-                        continue
-                    if "rmse" in k:
-                        tb_writer.add_scalar(f"rmse/{k}", v, epoch)
-                    if "mae" in k:
-                        tb_writer.add_scalar(f"mae/{k}", v, epoch)
+                if not args.train_all:
+                    tb_writer.add_scalar("loss/test", test_pref, epoch)
+                    for k, v in test_dict.items():
+                        if "r2" in k:
+                            tb_writer.add_scalar(f"r2_score/{k}", v, epoch)
+                            continue
+                        if "rmse" in k:
+                            tb_writer.add_scalar(f"rmse/{k}", v, epoch)
+                        if "mae" in k:
+                            tb_writer.add_scalar(f"mae/{k}", v, epoch)
 
 
 def main_cli():
@@ -483,6 +488,8 @@ def main_cli():
     parser.add_argument("--frozen-encoder", action='store_true', default=False)
     parser.add_argument("--enable-tb", action='store_true', default=False)
     parser.add_argument("--without-dihedral", action='store_true', default=False)
+
+    parser.add_argument("--train-all", action='store_true', default=False)
 
     parser.add_argument("--seed", type=int, default=2024)
 
