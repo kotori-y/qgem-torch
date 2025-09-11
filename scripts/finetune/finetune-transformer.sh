@@ -12,60 +12,71 @@ export PYTHONUNBUFFERED=1
 # export PYTHONPATH="$(pwd)/$root_path/":$PYTHONPATH
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
-DATASET_NAME=$2
-CONFIG_PATH='./configs/config.json'
-DATASET_ROOT="./data/downstream/$DATASET_NAME"
-DATASET_BASE_PATH="./data/downstream/$DATASET_NAME"
+SEED=$8
 
-LATENT_SIZE=128
-ENCODER_HIDDEN_SIZE=512
-NUM_ENCODER_LAYERS=2
+MODEL_CONFIG_PATH='./configs/config.json'
+# ENDPOINT_STATUS_FILE='./configs/tox_pc_mtl/toxicity_cls.json'
+# ENDPOINT_STATUS_FILE='./configs/tox_pc_mtl/physchem.json'
+ENDPOINT_STATUS_FILE='./configs/tox_pc_mtl/qc.json'
+
+# NAME="toxicity_nova_v2_cls"
+# NAME="physchem_nova_v2"
+NAME="qc_demo"
+DATASET_BASE_PATH="./data/downstream/${NAME}"
+
+LATENT_SIZE=32
+NUM_ENCODER_LAYERS=8
 DROPNODE_RATE=0.1
 ENCODER_DROPOUT=0.1
-NUM_MESSAGE_PASSING_STEPS=2
 
 HIDDEN_SIZE=512
 NUM_LAYERS=3
-DROPOUT_RATE=0.2
+DROPOUT_RATE=$6
 
-BATCH_SIZE=128
+BATCH_SIZE=$7
 NUM_WORKERS=6
 BETA=0.999
 WEIGHT_DECAY=1e-2
 
-ENCODER_LR=1e-4
-HEAD_LR=1e-2
+ENCODER_LR=$4
+HEAD_LR=$5
 
-EPOCHS=100
+EPOCHS=150
 LOG_INTERVAL=5
 
 DEVICE='cuda'
-SEED=2024
 
-MODEL_VER='gat'
+MODEL_VER='gin'
 
-CHECKPOINT_DIR="./outs/checkpoints/downstream/$DATASET_NAME/$MODEL_VER-$NUM_LAYERS-$DROPOUT_RATE-$ENCODER_LR-$HEAD_LR-frozen-beta"
-ENCODER_EVAL_FROM='./outs/checkpoints/pretrain/demo-gat/checkpoint_5.pt'
+ENCODER_EVAL_FROM=$2
 
-TASK_TYPE='regr'
+TASK_TYPE='regression'
+N_LABELS=5
 
 DISTRIBUTED=$1
+OUT_DIR=$3
 
-ENDPOINTS="Cat_Intravenous_LD50 Cat_Oral_LD50 Chicken_Oral_LD50 Dog_Oral_LD50 Duck_Oral_LD50 Guineapig_Oral_LD50 Mouse_Intramuscular_LD50 Mouse_Intraperitoneal_LD50 Mouse_Intravenous_LD50 Mouse_Oral_LD50 Mouse_Subcutaneous_LD50 Rabbit_Intravenous_LD50 Rabbit_Oral_LD50 Rat_Inhalation_LC50 Rat_Intraperitoneal_LD50 Rat_Intravenous_LD50 Rat_Oral_LD50 Rat_Skin_LD50 Rat_Subcutaneous_LD50"
+CHECKPOINT_DIR="./outs/checkpoints/${NAME}_transformer_v3/${OUT_DIR}_${EPOCHS}/${MODEL_VER}-L${NUM_LAYERS}-HS${HIDDEN_SIZE}-D${DROPOUT_RATE}-ELR${ENCODER_LR}-LR${HEAD_LR}-${SEED}-v3"
+# ENDPOINTS="Cat_Intravenous_LD50 Chicken_Oral_LD50 Guineapig_Oral_LD50 Mouse_Intravenous_LD50 Mouse_Subcutaneous_LD50 Rabbit_Oral_LD50 Rat_Intravenous_LD50 Rat_Subcutaneous_LD50 Cat_Oral_LD50 Dog_Intravenous_LD50 Mouse_Intraperitoneal_LD50 Mouse_Oral_LD50 Rabbit_Intravenous_LD50 Rat_Intraperitoneal_LD50 Rat_Oral_LD50"
+# ENDPOINTS="Boiling_Point Density Flash_Point LogP LogS Melting_Point Refractive_Index Surface_Tension Vapor_Pressure"
+# ENDPOINTS="Rat_Oral_LD50 Rat_Subcutaneous_LD50"
+ENDPOINTS="alphaOpt density eGapOpt eLumoOpt espAvg espcMin espVarNeg hCorre mpi npaMin sa saPos uCorre zpe cm5Max e0K eHOMO eOpt espAvgNeg espMax espVarPos H mu nu saNeg S U cm5Min e eHomoOpt ese espAvgPos espMin gCorre hirshfeldMax muOpt pi saNonpolar theta volumeIMT cv eGap eLUMO eseOpt espcMax espVar G hirshfeldMin npaMax productOfSigmaSquareAndNu saPolar thetaOpt volumeMC"
+
+PREPROCESS_ENDPOINTS="kotori"
+EXCLUDE_SMILES="kotori"
 
 if [ $DISTRIBUTED -eq 0 ]; then
   echo "run as single gpu mode"
   echo "=================="
-  python finetune_regr.py \
-    --config-path $CONFIG_PATH \
-    --dataset-root $DATASET_ROOT \
+  python finetune_transformer.py \
+    --seed $SEED \
+    --model-config-path $MODEL_CONFIG_PATH \
+    --endpoint-status-file $ENDPOINT_STATUS_FILE \
     --dataset-base-path $DATASET_BASE_PATH \
     --latent-size $LATENT_SIZE \
-    --encoder-hidden-size $ENCODER_HIDDEN_SIZE \
     --num-encoder-layers $NUM_ENCODER_LAYERS \
     --dropnode-rate $DROPNODE_RATE \
     --encoder-dropout $ENCODER_DROPOUT \
-    --num-message-passing-steps $NUM_MESSAGE_PASSING_STEPS \
     --hidden-size $HIDDEN_SIZE \
     --num-layers $NUM_LAYERS \
     --dropout-rate $DROPOUT_RATE \
@@ -84,8 +95,12 @@ if [ $DISTRIBUTED -eq 0 ]; then
     --lr-warmup \
     --use-adamw \
     --remove-hs \
+    --enable-tb \
     --endpoints $ENDPOINTS \
-    --frozen-encoder
+    --preprocess-endpoints $PREPROCESS_ENDPOINTS \
+    --exclude-smiles $EXCLUDE_SMILES \
+    --task-type $TASK_TYPE \
+    --n-labels $N_LABELS
 else
   echo "run as multi gpu mode"
   echo "=================="
