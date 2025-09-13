@@ -1,0 +1,38 @@
+{
+  "Boiling_Point": {
+    "num": 114716,
+    "sample": 0.11851095789367114
+  },
+  "Density": {
+    "num": 121518,
+    "sample": 0.12257916785613052
+  },
+  "Flash_Point": {
+    "num": 107416,
+    "sample": 0.10585902545362803
+  },
+  "LogP": {
+    "num": 167322,
+    "sample": 0.16118519603149298
+  },
+  "LogS": {
+    "num": 81633,
+    "sample": 0.07690793056212421
+  },
+  "Melting_Point": {
+    "num": 227038,
+    "sample": 0.20928961295276655
+  },
+  "Refractive_Index": {
+    "num": 109674,
+    "sample": 0.09896874842081706
+  },
+  "Surface_Tension": {
+    "num": 15296,
+    "sample": 0.013517944240247522
+  },
+  "Vapor_Pressure": {
+    "num": 23365,
+    "sample": 0.020231223882974946
+  }
+}

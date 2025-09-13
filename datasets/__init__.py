@@ -824,6 +824,8 @@ class EgeognnInferenceDataset(TorchDataset):
             mol = RemoveHs(tmp_mol) if self.remove_hs else tmp_mol
             if mol.GetNumBonds() < 1:
                 return
+            if mol.GetNumAtoms() <= 3:
+                return
             return mol
         except Exception:
             return

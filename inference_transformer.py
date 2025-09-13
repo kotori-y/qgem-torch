@@ -6,17 +6,15 @@ import os
 import pandas as pd
 import numpy as np
 import torch
+from rdkit import Chem
 from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 from datasets import EgeognnInferenceDataset
-from models.downstream import DownstreamModel
+from featurize import calculate_descriptor
 from models.gin import EGeoGNNModel
-from models.inference import InferenceModel
 from models.downstream import DownstreamTransformerModel
 import random
-
-from utils import exempt_parameters
 
 
 def inference(model: DownstreamTransformerModel, device, loader, endpoints):
@@ -51,7 +49,7 @@ def inference(model: DownstreamTransformerModel, device, loader, endpoints):
             smiles = [*smiles, *batch.smiles]
 
     results = np.hstack(results).reshape(-1, len(endpoints))
-    return results, smiles
+    return results, smiles[0::len(endpoints)]
 
 
 def main(args):
@@ -134,17 +132,26 @@ def main(args):
         loader=loader,
         endpoints=args.endpoints
     )
+    if args.task_type == "classification":
+        pred_scaled = pred_scaled.argmax(dim=1, keepdim=True)
 
-    pred_scaled_df = pd.DataFrame(pred_scaled, index=smiles[0::len(args.endpoints)], columns=args.endpoints)
-    status_df = pd.DataFrame(endpoint_statuses)
+    pred_scaled_df = pd.DataFrame(pred_scaled, index=smiles, columns=args.endpoints)
 
     for endpoint in args.endpoints:
         mean = endpoint_statuses[endpoint]["mean"]
         std = endpoint_statuses[endpoint]["std"]
         pred_scaled_df[endpoint] = pred_scaled_df[endpoint] * std + mean
 
-    print(pred_scaled_df)
+    if args.representation:
+        mols = [Chem.MolFromSmiles(x) for x in smiles]
+        desc = calculate_descriptor(mols)
+        return np.hstack([desc, pred_scaled_df.values]).tolist()
+
+    if args.return_json:
+        return pred_scaled_df.T.to_dict()
+
     pred_scaled_df.to_csv(args.out_file, index_label='SMILES')
+    return pred_scaled_df
 
 
 def main_cli():
@@ -157,7 +164,7 @@ def main_cli():
     parser.add_argument("--endpoint-status-file", type=str, default=None)
     parser.add_argument("--out-file", type=str)
 
-    # parser.add_argument("--smiles-list", type=str, nargs="+")
+    parser.add_argument("--smiles-list", type=str, nargs="+", default=None)
     parser.add_argument("--smiles-file", type=str)
     parser.add_argument("--endpoints", type=str, nargs="+")
 
@@ -181,16 +188,37 @@ def main_cli():
     parser.add_argument("--num-workers", type=int, default=4)
 
     parser.add_argument("--seed", type=int, default=2024)
+    parser.add_argument("--return-json", action='store_true', default=False)
+    parser.add_argument("--representation", action='store_true', default=False)
 
     args = parser.parse_args()
 
-    data = pd.read_csv(args.smiles_file, header=None)
-    args.smiles_list = list(np.repeat(data[0].values, len(args.endpoints)))
-    print(args)
+    assert args.task_type in ['regression', 'classification']
 
-    main(args)
+    if args.representation:
+        assert args.smiles_list is not None
+        args.endpoints = [
+            "alphaOpt", "density", "eGapOpt", "eLumoOpt", "espAvg", "espcMin", "espVarNeg", "hCorre", "mpi", "npaMin",
+            "sa", "saPos", "uCorre", "zpe", "cm5Max", "e0K", "eHOMO", "eOpt", "espAvgNeg", "espMax", "espVarPos", "H",
+            "mu", "nu", "saNeg", "S", "U", "cm5Min", "e", "eHomoOpt", "ese", "espAvgPos", "espMin", "gCorre",
+            "hirshfeldMax", "muOpt", "pi", "saNonpolar", "theta", "volumeIMT", "cv", "eGap", "eLUMO", "eseOpt",
+            "espcMax", "espVar", "G", "hirshfeldMin", "npaMax", "productOfSigmaSquareAndNu", "saPolar", "thetaOpt",
+            "volumeMC"
+        ]
+        args.task_type = "regression"
+        args.status_file = "./configs/tox_pc_mtl/qc_demo_status.json"
+
+    if args.smiles_list is None:
+        data = pd.read_csv(args.smiles_file, header=None)
+        args.smiles_list = list(np.repeat(data[0].values, len(args.endpoints)))
+    else:
+        args.smiles_list = list(np.repeat(args.smiles_list, len(args.endpoints)))
+
+    print(args)
+    return main(args)
     # print(prediction)
 
 
 if __name__ == '__main__':
-    main_cli()
+    result = main_cli()
+    print(result)
