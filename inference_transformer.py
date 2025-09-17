@@ -24,7 +24,12 @@ def inference(model: DownstreamTransformerModel, device, loader, endpoints):
     smiles = []
 
     for step, batch in enumerate(loader):
-        tgt_endpoints = torch.tensor(range(len(endpoints))).int().reshape(-1, 1)
+
+        assert loader.batch_size % len(endpoints) == 0
+
+        n_repeat = int(loader.batch_size / len(endpoints))
+        tgt_endpoints = torch.tensor(range(len(endpoints))).int().repeat(n_repeat).reshape(-1, 1)
+
         input_params = {
             "AtomBondGraph_edges": batch.AtomBondGraph_edges.to(device),
             "BondAngleGraph_edges": batch.BondAngleGraph_edges.to(device),
@@ -40,7 +45,7 @@ def inference(model: DownstreamTransformerModel, device, loader, endpoints):
             "num_bonds": batch.n_bonds.to(device),
             "num_angles": batch.n_angles.to(device),
             "atom_batch": batch.batch.to(device),
-            "tgt_endpoints": tgt_endpoints
+            "tgt_endpoints": tgt_endpoints.to(device)
         }
 
         with torch.no_grad():
@@ -74,7 +79,7 @@ def main(args):
 
     loader = DataLoader(
         dataset,
-        batch_size=len(args.endpoints),
+        batch_size=len(args.endpoints) * 2,
         shuffle=False,
         num_workers=args.num_workers
     )
