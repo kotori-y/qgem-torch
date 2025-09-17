@@ -10,7 +10,7 @@ export PYTHONUNBUFFERED=1
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 
-SEED=555
+SEED=805
 EPOCH=146
 
 MODEL_CONFIG_PATH='./configs/config.json'
@@ -32,7 +32,7 @@ WEIGHT_DECAY=1e-2
 DEVICE='cpu'
 
 ENCODER_EVAL_FROM='./outs/checkpoints/pretrain/zinc22-10-gin/checkpoint_10.pt'
-MODEL_EVAL_FROM="./outs/checkpoints/physchem_nova_v2_transformer_v3/100M_150/gin-L3-HS512-D0.1-ELR1e-4-LR1e-3-${SEED}-v3/checkpoint_${EPOCH}.pt"
+MODEL_EVAL_FROM="./outs/checkpoints-all/physchem_nova_v2_transformer_v3/100M_150/gin-L3-HS512-D0.1-ELR1e-4-LR1e-3-${SEED}-v3/checkpoint_${EPOCH}.pt"
 
 TASK_TYPE='regression'
 
