@@ -1,4 +1,4 @@
-# EGEM implemented by pytorch
+# QGEM implemented by pytorch
 
 ## Inference
 ```shell
